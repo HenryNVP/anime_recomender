@@ -1,0 +1,100 @@
+# -------------------------
+# OS / Editors
+# -------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.conda/
+*.conda
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tests / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# -------------------------
+# Logs / Runs / Tracking
+# -------------------------
+runs/
+logs/
+mlruns/
+wandb/
+tensorboard/
+
+# -------------------------
+# Artifacts / Checkpoints
+# -------------------------
+artifacts/
+checkpoints/
+*.ckpt
+*.pth
+*.pt
+*.onnx
+
+# -------------------------
+# Data (generated)
+#   - raw / processed / interim
+#   - splits, outputs, mappings
+#   - CSV/NPY/NPZ artifacts
+# -------------------------
+data/
+data_clean/
+data_mini/
+data_processed/
+datasets/
+**/splits/
+**/outputs/
+**/mappings/
+**/artifacts/
+
+# Generated tabular/binary data anywhere
+**/*.csv
+**/*.parquet
+**/*.npy
+**/*.npz
+
+# Keep curated CSVs if you add any here:
+!configs/*.csv
+!tests/fixtures/*.csv
+
+# Demo data produced by scripts/make_demo_data.py
+ratings.csv
+demo_*.csv
+
+# -------------------------
+# Env / Secrets
+# -------------------------
+.env
+*.env
+.envrc
+secrets*.env
+
+# -------------------------
+# Misc cache / backups
+# -------------------------
+.cache/
+*.log
+*~
