@@ -82,50 +82,30 @@ def get_device(prefer: Optional[str] = None) -> str:
 # Simple logger
 # ------------------------
 class Logger:
-    """
-    Minimal experiment logger.
-    - Writes a CSV with columns: epoch,split,loss,metric
-    - Optionally writes TensorBoard scalars (loss, metric, and any custom scalars)
-    """
+    def __init__(self, run_dir: str, use_tb: bool = True):
+        os.makedirs(run_dir, exist_ok=True)
+        self.run_dir = run_dir
+        self.tb = SummaryWriter(run_dir) if use_tb else None
+        self.csv_path = os.path.join(run_dir, "metrics.csv")
+        if not os.path.exists(self.csv_path):
+            with open(self.csv_path, "w", encoding="utf-8") as f:
+                f.write("epoch,split,metric,value\n")
 
-    def __init__(self, outdir: str, use_tb: bool = True, filename: str = "log.csv") -> None:
-        os.makedirs(outdir, exist_ok=True)
-        self.csv_path = os.path.join(outdir, filename)
-        # initialize CSV with header
-        with open(self.csv_path, "w", encoding="utf-8") as f:
-            f.write("epoch,split,loss,metric\n")
-
-        self.tb: Optional[Any] = None
-        if use_tb and SummaryWriter is not None:
-            try:
-                self.tb = SummaryWriter(outdir)  # type: ignore[operator]
-            except Exception:
-                self.tb = None  # fail gracefully if TB backend missing
-
-    def log(self, epoch: int, split: str, loss: float, metric: float) -> None:
-        """Log a standard line (epoch, split, loss, metric)."""
+    def log_scalar(self, epoch: int, split: str, metric: str, value: float):
+        v = float(value)
         with open(self.csv_path, "a", encoding="utf-8") as f:
-            f.write(f"{int(epoch)},{split},{float(loss):.6f},{float(metric):.6f}\n")
+            f.write(f"{epoch},{split},{metric},{v}\n")
+        if self.tb:
+            self.tb.add_scalar(f"{split}/{metric}", v, epoch)
+            self.tb.flush()
 
-        if self.tb is not None:
-            # Scalar names mirror CSV for easy comparison
-            self.tb.add_scalar(f"{split}/loss", float(loss), epoch)    # type: ignore[union-attr]
-            self.tb.add_scalar(f"{split}/metric", float(metric), epoch)  # type: ignore[union-attr]
+    def log_dict(self, epoch: int, split: str, metrics: dict[str, float]):
+        for k, v in metrics.items():
+            self.log_scalar(epoch, split, k, v)
 
-    def log_scalar(self, tag: str, value: float, step: int) -> None:
-        """Log any additional scalar to TensorBoard (no-op if TB disabled)."""
-        if self.tb is not None:
-            self.tb.add_scalar(tag, float(value), step)  # type: ignore[union-attr]
-
-    def log_dict(self, step: int, **scalars: float) -> None:
-        """Log a dict of scalars to TensorBoard under their own tags."""
-        if self.tb is not None:
-            for k, v in scalars.items():
-                self.tb.add_scalar(k, float(v), step)  # type: ignore[union-attr]
-
-    def close(self) -> None:
-        if self.tb is not None:
-            self.tb.close()  # type: ignore[union-attr]
+    def close(self):
+        if self.tb:
+            self.tb.close()
 
 
 # ------------------------

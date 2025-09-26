@@ -5,10 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .model import ItemCF
-from src.utils_metrics import (
-    precision_recall_at_k, hit_rate_at_k, average_precision_at_k,
-    mrr_at_k, ndcg_at_k, catalog_coverage, avg_popularity,
-)
+from src.baselines.itemcf.metrics import precision_recall_at_k, hit_rate_at_k, average_precision_at_k, ndcg_at_k
 
 # ---------- helpers ----------
 def _infer_shape(splits_dir: str) -> Tuple[int, int]:
@@ -97,7 +94,6 @@ def eval_from_splits(
     model_prefix: str,
     splits_dir: str,
     split: str = "test",
-    mode: str = "both",          # rating|ranking|both
     k_list: List[int] | None = None,
     pos_threshold: float = 8.0,
     exclude_seen: bool = True,
@@ -106,58 +102,62 @@ def eval_from_splits(
 ) -> Dict[str, Dict]:
     model = ItemCF().load(model_prefix)
     results: Dict[str, Dict] = {}
+
+    # ---------- Rating ----------
     split_path = os.path.join(splits_dir, f"{split}.csv")
     if not os.path.exists(split_path):
         raise FileNotFoundError(f"Missing split {split_path}")
     df = pd.read_csv(split_path, usecols=["user_id", "anime_id", "rating"])
 
-    if mode in ("rating", "both"):
-        y = df["rating"].to_numpy(np.float32)
-        p = model.predict_batch(df["user_id"].to_numpy(), df["anime_id"].to_numpy())
-        results["rating"] = {"RMSE": float(np.sqrt(np.mean((p - y) ** 2))),
-                             "MAE": float(np.mean(np.abs(p - y)))}
+    y = df["rating"].to_numpy(np.float32)
+    p = model.predict_batch(df["user_id"].to_numpy(), df["anime_id"].to_numpy())
+    rmse = float(np.sqrt(np.mean((p - y) ** 2)))
+    mae = float(np.mean(np.abs(p - y)))
+    results["rating"] = {"rmse": rmse, "mae": mae}
 
-    if mode in ("ranking", "both"):
-        n_items = model.n_items
-        Ks = sorted(set(k_list or [10, 20]))
-        absS = model.S.copy()
-        absS.data = np.abs(absS.data, dtype=np.float32)
-        denom = np.ravel(np.asarray(absS.sum(axis=1))).astype(np.float32) + 1e-12
-        seen = _load_seen_sets(splits_dir, also_exclude_val) if exclude_seen else {}
-        gt_pos = _ground_truth_pos(df, pos_threshold)
-        pop = _item_popularity_from_train(splits_dir, n_items)
+    # ---------- Ranking ----------
+    n_items = model.n_items
+    Ks = sorted(set(k_list or [10, 20]))
+    absS = model.S.copy()
+    absS.data = np.abs(absS.data, dtype=np.float32)
+    denom = np.ravel(np.asarray(absS.sum(axis=1))).astype(np.float32) + 1e-12
+    seen = _load_seen_sets(splits_dir, also_exclude_val) if exclude_seen else {}
+    gt_pos = _ground_truth_pos(df, pos_threshold)
+    pop = _item_popularity_from_train(splits_dir, n_items)
 
-        users = sorted(gt_pos.keys())
-        if max_users and max_users > 0: users = users[:max_users]
+    users = sorted(gt_pos.keys())
+    if max_users and max_users > 0:
+        users = users[:max_users]
 
-        ranked, truths = [], []
-        for u in users:
-            urow = model.R.getrow(u)
-            base = model._user_base(u)
-            if urow.nnz == 0:
-                scores = pop.astype(np.float32)
-            else:
-                r_c = np.zeros(n_items, dtype=np.float32)
-                r_c[urow.indices] = urow.data
-                numer = model.S.dot(r_c).astype(np.float32)
-                scores = base + numer / denom
-            if exclude_seen and u in seen:
-                scores[list(seen[u])] = -np.inf
-            order = np.argsort(-scores, kind="mergesort")
-            ranked.append(order.astype(int).tolist())
-            truths.append(gt_pos.get(u, []))
+    ranked, truths = [], []
+    for u in users:
+        urow = model.R.getrow(u)
+        base = model._user_base(u)
+        if urow.nnz == 0:
+            scores = pop.astype(np.float32)
+        else:
+            r_c = np.zeros(n_items, dtype=np.float32)
+            r_c[urow.indices] = urow.data
+            numer = model.S.dot(r_c).astype(np.float32)
+            scores = base + numer / denom
+        if exclude_seen and u in seen:
+            scores[list(seen[u])] = -np.inf
+        order = np.argsort(-scores, kind="mergesort")
+        ranked.append(order.astype(int).tolist())
+        truths.append(gt_pos.get(u, []))
 
-        rank_metrics = {}
-        for K in Ks:
-            p, r = precision_recall_at_k(truths, ranked, K)
-            hr = hit_rate_at_k(truths, ranked, K)
-            ap = average_precision_at_k(truths, ranked, K)
-            mrr = mrr_at_k(truths, ranked, K)
-            nd = ndcg_at_k(truths, ranked, K)
-            cov = catalog_coverage(ranked, n_items=n_items, k=K)
-            popb = avg_popularity(ranked, item_popularity=pop, k=K)
-            rank_metrics[K] = {"P":p, "R":r, "HR":hr, "MAP":ap, "MRR":mrr, "NDCG":nd,
-                               "Coverage":cov, "AvgPop":float(popb)}
-        results["ranking"] = rank_metrics
+    results["ranking"] = {}
+    for K in Ks:
+        P, R = precision_recall_at_k(truths, ranked, K)
+        hr = hit_rate_at_k(truths, ranked, K)
+        MAP = average_precision_at_k(truths, ranked, K)
+        nd = ndcg_at_k(truths, ranked, K)
+        results["ranking"][K] = {
+            "HR": hr,
+            "NDCG": nd,
+            "P": float(P),
+            "R": float(R),
+            "MAP": float(MAP),
+        }
 
     return results

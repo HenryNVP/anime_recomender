@@ -60,6 +60,7 @@ checkpoints/
 #   - splits, outputs, mappings
 #   - CSV/NPY/NPZ artifacts
 # -------------------------
+scripts/make_demo_data.py
 data/
 data_clean/
 data_mini/

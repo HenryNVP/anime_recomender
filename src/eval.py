@@ -20,7 +20,7 @@ import yaml
 
 from src.recsys.models.mf import MF
 from src.recsys.models.neumf import NeuMF
-from src.recsys.metrics import hitrate_at_k, ndcg_at_k
+from src.recsys.metrics import hit_rate_at_k, ndcg_at_k, precision_recall_at_k, average_precision_at_k
 from src.utils import get_device
 
 
@@ -166,33 +166,24 @@ def eval_ranking(
     # Seen sets
     seen = build_seen_sets(processed_dir, also_exclude_val) if exclude_seen else {}
 
-    # For MF we can vectorize over items per user; for NeuMF we'll batch items
     is_mf = isinstance(model, MF)
-
-    metrics_out: Dict[int, Dict[str, float]] = {}
-    for K in k_list:
-        metrics_out[K] = {}
-
     ranked_lists: List[List[int]] = []
     true_lists: List[List[int]] = []
 
     with torch.no_grad():
         if is_mf:
-            # Preload item embeddings/bias for speed
-            Q = model.Q.weight.to(device)                     # (n_items, d)
+            Q = model.Q.weight.to(device)  # (n_items, d)
             ib = model.ib.weight[:, 0].to(device) if model.ib is not None else None
 
         for u in users:
             if is_mf:
-                # scores = (P[u] * Q).sum(-1) + ub[u] + ib[:]
-                p = model.P.weight[u:u+1].to(device)          # (1, d)
-                scores = (p * Q).sum(-1)                      # (n_items,)
+                p = model.P.weight[u:u+1].to(device)  # (1, d)
+                scores = (p * Q).sum(-1)
                 if model.ub is not None:
-                    scores = scores + model.ub.weight[u, 0].to(device)
+                    scores += model.ub.weight[u, 0].to(device)
                 if ib is not None:
-                    scores = scores + ib
+                    scores += ib
             else:
-                # Batch over items
                 B = 8192
                 idx = torch.arange(n_items, device=device)
                 chunks = []
@@ -200,25 +191,33 @@ def eval_ranking(
                     it = idx[t:t+B]
                     ut = torch.full_like(it, fill_value=u, dtype=torch.long)
                     chunks.append(model(ut, it))
-                scores = torch.cat(chunks, dim=0)             # (n_items,)
+                scores = torch.cat(chunks, dim=0)
 
             scores_np = scores.detach().cpu().numpy()
 
+            # Mask seen items
             if exclude_seen and u in seen:
-                # Make seen items unrankable
-                idxs = list(seen[u])
-                scores_np[idxs] = -np.inf
+                seen_idxs = list(seen[u])
+                scores_np[seen_idxs] = -np.inf
 
             order = np.argsort(-scores_np, kind="mergesort")
             ranked_lists.append(order.tolist())
             true_lists.append(pos.get(u, []))
 
+    # --- Compute metrics per K ---
     results: Dict[int, Dict[str, float]] = {}
     for K in k_list:
-        hr = hitrate_at_k(true_lists, ranked_lists, K)
-        ndcg = ndcg_at_k(true_lists, ranked_lists, K)
-        results[K] = {"HR": float(hr), "NDCG": float(ndcg)}
-        print(f"[ranking] K={K:>3} | HR={hr:.4f} NDCG={ndcg:.4f}")
+        hr_list = []
+        ndcg_list = []
+        for truth, ranked in zip(true_lists, ranked_lists):
+            hr_list.append(hit_rate_at_k(truth, ranked, K))
+            ndcg_list.append(ndcg_at_k(truth, ranked, K))
+        hr = float(np.mean(hr_list))
+        ndcg = float(np.mean(ndcg_list))
+        P, R = precision_recall_at_k(true_lists, ranked_lists, K)
+        MAP = average_precision_at_k(true_lists, ranked_lists, K)
+        results[K] = {"HR": hr, "NDCG": ndcg, "P": float(P), "R": float(R), "MAP": float(MAP)}
+        print(f"[ranking] K={K:>3} | HR={hr:.4f} NDCG={ndcg:.4f} P={P:.4f} R={R:.4f} MAP={MAP:.4f}")
 
     return results
 
@@ -230,7 +229,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Unified evaluation (rating and/or ranking)")
     p.add_argument("--config", default="configs/config.yaml", help="Path to YAML config")
     p.add_argument("--ckpt", default=None, help="Path to .ckpt file or a run dir (best/last). If omitted, uses runs/<exp>/latest/best.ckpt")
-    p.add_argument("--mode", choices=["rating", "ranking", "both"], default="both")
     p.add_argument("--split", choices=["val", "test"], default="test")
 
     # ranking params
@@ -265,26 +263,24 @@ def main():
 
     all_metrics = {}
 
-    if a.mode in ("rating", "both"):
-        rmse, mae = eval_rating(model, df, device)
-        all_metrics["rating"] = {"RMSE": rmse, "MAE": mae}
-        print(f"[rating] {a.split} | RMSE={rmse:.4f} MAE={mae:.4f}")
+    rmse, mae = eval_rating(model, df, device)
+    all_metrics["rating"] = {"RMSE": rmse, "MAE": mae}
+    print(f"[rating] {a.split} | RMSE={rmse:.4f} MAE={mae:.4f}")
 
-    if a.mode in ("ranking", "both"):
-        K_list = sorted({int(x) for x in a.k.split(",") if x.strip()})
-        rank_metrics = eval_ranking(
-            model=model,
-            processed_dir=processed_dir,
-            df_split=df,
-            n_items=n_items,
-            k_list=K_list,
-            pos_threshold=a.pos_threshold,
-            exclude_seen=bool(a.exclude_seen),
-            also_exclude_val=bool(a.also_exclude_val),
-            device=device,
-            limit_users=(a.max_users if a.max_users > 0 else None),
-        )
-        all_metrics["ranking"] = rank_metrics
+    K_list = sorted({int(x) for x in a.k.split(",") if x.strip()})
+    rank_metrics = eval_ranking(
+        model=model,
+        processed_dir=processed_dir,
+        df_split=df,
+        n_items=n_items,
+        k_list=K_list,
+        pos_threshold=a.pos_threshold,
+        exclude_seen=bool(a.exclude_seen),
+        also_exclude_val=bool(a.also_exclude_val),
+        device=device,
+        limit_users=(a.max_users if a.max_users > 0 else None),
+    )
+    all_metrics["ranking"] = rank_metrics
 
     # Optional JSON dump
     if a.out:

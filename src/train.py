@@ -23,11 +23,11 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.recsys.data_recsys import RatingsDS
+from src.recsys.ratingds import RatingsDS
 from src.recsys.models.mf import MF
 from src.recsys.models.neumf import NeuMF
-from src.recsys.models.item_cf import ItemCF
 from src.utils import seed_all, Logger, get_device
+from src.recsys import metrics
 
 
 # -----------------------------
@@ -124,6 +124,73 @@ def load_ckpt_for_resume(path: str, model: torch.nn.Module, opt: Optional[torch.
     n_items_ck = int(ck.get("n_items", 0))
     return start_epoch, best_val, n_users_ck, n_items_ck, ck.get("cfg", None)
 
+import os, pandas as pd, torch, numpy as np
+from torch.utils.data import DataLoader
+
+@torch.no_grad()
+def validate_epoch(model, device, cfg, dl_val: DataLoader, *, n_items: int, epoch: int):
+    model.eval()
+
+    # ------- RMSE on val loader -------
+    se = 0.0; n = 0
+    for u, i, r in dl_val:
+        u, i, r = u.to(device), i.to(device), r.to(device)
+        p = model(u, i)
+        se += torch.sum((p - r) ** 2).item()
+        n  += r.numel()
+    val_rmse = float(np.sqrt(se / max(n, 1)))
+
+    # ------- Ranking on a subset of users -------
+    proc = cfg["recsys"]["processed_dir"]
+    df_tr = pd.read_csv(os.path.join(proc, "splits/train.csv"))
+    df_va = pd.read_csv(os.path.join(proc, "splits/val.csv"))
+
+    # choose up to 300 users that have at least one positive in val (>= 8)
+    pos_va = df_va[df_va["rating"] >= 8.0]
+    users = sorted(pos_va["user_id"].unique().tolist())[:300]
+
+    # build seen masks from train (exclude-seen)
+    seen = {}
+    for u, i in df_tr[["user_id","anime_id"]].itertuples(index=False):
+        seen.setdefault(int(u), set()).add(int(i))
+
+    hr_list, ndcg_list = [], []
+    B = 8192  # score items in chunks to reduce memory
+    for u in users:
+        # positives in val
+        truth = pos_va[pos_va["user_id"] == u]["anime_id"].astype(int).tolist()
+        if not truth:
+            continue
+
+        scores = []
+        items = torch.arange(n_items, device=device)
+        uu = torch.full_like(items, u, dtype=torch.long)
+        for t in range(0, n_items, B):
+            it = items[t:t+B]; ut = uu[t:t+B]
+            scores.append(model(ut, it))
+        s = torch.cat(scores)  # (n_items,)
+        s = s.cpu().numpy()
+
+        # exclude seen (train)
+        if u in seen and seen[u]:
+            s[list(seen[u])] = -np.inf
+
+        order = np.argsort(-s)  # best first
+        ranked = order.tolist()
+
+        hr_list.append(metrics.hit_rate_at_k(truth, ranked, k=10))
+        ndcg_list.append(metrics.ndcg_at_k(truth, ranked, k=10))
+
+    val_hr10    = float(np.mean(hr_list)) if hr_list else 0.0
+    val_ndcg10  = float(np.mean(ndcg_list)) if ndcg_list else 0.0
+
+    return {
+        "rmse": val_rmse,
+        "hr@10": val_hr10,
+        "ndcg@10": val_ndcg10,
+    }
+
+
 
 # -----------------------------
 # CLI
@@ -149,7 +216,7 @@ def main():
 
     # Paths / run dir
     base_runs = cfg["log"]["dir"]
-    exp_name = cfg.get("exp_name", "exp")
+    exp_name = cfg.get("neumf_name", "neumf")
     if args.run_dir:
         run_dir = args.run_dir
         os.makedirs(run_dir, exist_ok=True)
@@ -246,71 +313,74 @@ def main():
             print(f"[warn] Failed to resume from {args.resume}: {e}")
 
     # Training loop
+    best_rmse = -1.0
+    epochs_no_improve = 0
     patience = int(cfg["optim"].get("early_stopping_patience", 3))
-    bad = 0
-    epochs = int(cfg["optim"]["epochs"])
 
-    for epoch in range(start_epoch, epochs + 1):
-        # --- Train ---
+    for epoch in range(1, cfg["optim"]["epochs"] + 1):
         model.train()
-        tr_loss = 0.0
-        for u, i, r in tqdm(dl_train, desc=f"epoch {epoch}"):
-            u = u.to(device)
-            i = i.to(device)
-            r = r.to(device)
-
+        train_loss = 0.0; steps = 0
+        for u, i, r in dl_train:
+            u, i, r = u.to(device), i.to(device), r.to(device)
             opt.zero_grad(set_to_none=True)
-            if device == "cuda" and use_amp:
-                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-                    pred = model(u, i)
-                    loss = loss_fn(pred, r)
-                scaler.scale(loss).backward()
-                scaler.step(opt)
-                scaler.update()
-            else:
-                pred = model(u, i)
-                loss = loss_fn(pred, r)
-                loss.backward()
-                opt.step()
+            pred = model(u, i)
+            loss = loss_fn(pred, r)
+            loss.backward()
+            opt.step()
+            train_loss += loss.item(); steps += 1
 
-            tr_loss += float(loss.item()) * u.shape[0]
+        train_loss /= max(steps, 1)
+        logger.log_scalar(epoch, "train", "loss", train_loss)
 
-        tr_loss /= max(1, len(train_ds))
+        # --- validate ---
+        val_metrics = validate_epoch(model, device, cfg, dl_val, n_items=n_items, epoch=epoch)
+        logger.log_dict(epoch, "val", {
+            "rmse": val_metrics["rmse"],
+            "hr@10": val_metrics["hr@10"],
+            "ndcg@10": val_metrics["ndcg@10"],
+        })
 
-        # --- Val ---
-        model.eval()
-        va_loss = 0.0
-        with torch.no_grad():
-            for u, i, r in dl_val:
-                u = u.to(device)
-                i = i.to(device)
-                r = r.to(device)
-                pred = model(u, i)
-                va_loss += float(loss_fn(pred, r).item()) * u.shape[0]
-        va_loss /= max(1, len(val_ds))
+        # --- checkpointing by RMSE ---
+        cur = val_metrics["rmse"]
+        is_best = cur < best_val - 1e-6
+        if is_best:
+            best_rmse = cur
+            epochs_no_improve = 0
+            save_ckpt(
+                path=os.path.join(run_dir, "best.ckpt"),
+                model=model,
+                opt=opt,
+                epoch=epoch,
+                best_val=best_rmse,
+                n_users=n_users,
+                n_items=n_items,
+                cfg=cfg,
+            )
 
-        # Log
-        logger.log(epoch, "train", tr_loss, tr_loss)
-        logger.log(epoch, "val", va_loss, va_loss)
-        print(f"[epoch {epoch}] train_loss={tr_loss:.4f} val_loss={va_loss:.4f}")
-
-        # Save last
-        save_ckpt(os.path.join(run_dir, "last.ckpt"), model, opt, epoch, best_val, n_users, n_items, cfg)
-
-        # Early stopping / save best
-        if va_loss < best_val - 1e-6:
-            best_val = va_loss
-            bad = 0
-            save_ckpt(os.path.join(run_dir, "best.ckpt"), model, opt, epoch, best_val, n_users, n_items, cfg)
         else:
-            bad += 1
-            if bad >= patience:
-                print(f"[early-stop] no improvement for {patience} epochs. Stopping at epoch {epoch}.")
-                break
+            epochs_no_improve += 1
 
-    logger.close()
-    print(f"[done] best_val={best_val:.6f} | artifacts -> {run_dir}")
+        # always save last
+        save_ckpt(
+            path=os.path.join(run_dir, "last.ckpt"),
+            model=model,
+            opt=opt,
+            epoch=epoch,
+            best_val=best_rmse,
+            n_users=n_users,
+            n_items=n_items,
+            cfg=cfg,
+        )
 
+
+        print(f"epoch {epoch:02d} | train loss {train_loss:.4f} | "
+            f"val RMSE {val_metrics['rmse']:.4f} | HR@10 {val_metrics['hr@10']:.4f} | "
+            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | best RMSE {best_rmse:.4f}")
+
+        # --- early stopping on RMSE ---
+        if patience > 0 and epochs_no_improve >= patience:
+            print(f"[early-stop] no RMSE improvement for {patience} epochs")
+            break
 
 if __name__ == "__main__":
     main()

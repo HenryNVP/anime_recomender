@@ -1,7 +1,9 @@
+# recsys/utils_metrics.py
 from __future__ import annotations
-from typing import List, Sequence, Set, Tuple, Optional
+from typing import List, Set, Sequence, Tuple, Optional
 import numpy as np
 
+# -------- Helpers --------
 def _as_sets(true_items: Sequence[Sequence[int]]) -> List[Set[int]]:
     return [set(x) for x in true_items]
 
@@ -26,9 +28,16 @@ def precision_recall_at_k(
         recalls.append(hit / max(len(t), 1) if len(t) > 0 else 0.0)
     return float(np.mean(precisions)), float(np.mean(recalls))
 
-def hit_rate_at_k(truth: list[int], ranked: list[int], k: int = 10) -> float:
-    topk = ranked[:k]
-    return 1.0 if any(t in topk for t in truth) else 0.0
+def hit_rate_at_k(
+    true_items: Sequence[Sequence[int]],
+    ranked_items: Sequence[Sequence[int]],
+    k: int,
+) -> float:
+    """Fraction of users with at least one hit in top-K."""
+    T = _as_sets(true_items)
+    R = _clip_k(ranked_items, k)
+    hits = [(len(set(r).intersection(t)) > 0) for t, r in zip(T, R)]
+    return float(np.mean(hits))
 
 def average_precision_at_k(
     true_items: Sequence[Sequence[int]],
@@ -51,13 +60,24 @@ def average_precision_at_k(
         ap_vals.append(prec_sum / min(len(t), k))
     return float(np.mean(ap_vals))
 
-def ndcg_at_k(truth: list[int], ranked: list[int], k: int = 10) -> float:
-    topk = ranked[:k]
-    if not truth:
-        return 0.0
-    rel = [1.0 if i in truth else 0.0 for i in topk]
-    dcg = sum(r / np.log2(idx + 2) for idx, r in enumerate(rel))
-    # ideal DCG: as many 1s as min(len(truth), k)
-    m = min(len(truth), k)
-    idcg = sum(1.0 / np.log2(i + 2) for i in range(m))
-    return float(dcg / idcg) if idcg > 0 else 0.0
+def ndcg_at_k(
+    true_items: Sequence[Sequence[int]],
+    ranked_items: Sequence[Sequence[int]],
+    k: int,
+) -> float:
+    """Binary relevance NDCG@K (macro)."""
+    T = _as_sets(true_items)
+    R = _clip_k(ranked_items, k)
+
+    def dcg(rel: np.ndarray) -> float:
+        if rel.size == 0: return 0.0
+        denom = np.log2(np.arange(2, rel.size + 2))
+        return float(np.sum(rel / denom))
+
+    ndcgs = []
+    for t, r in zip(T, R):
+        rel = np.array([1.0 if x in t else 0.0 for x in r], dtype=np.float32)
+        idcg = dcg(np.sort(rel)[::-1])
+        ndcgs.append(dcg(rel) / idcg if idcg > 0 else 0.0)
+    return float(np.mean(ndcgs))
+
