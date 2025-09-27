@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Tuple, Optional
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
@@ -123,9 +124,6 @@ def load_ckpt_for_resume(path: str, model: torch.nn.Module, opt: Optional[torch.
     n_users_ck = int(ck.get("n_users", 0))
     n_items_ck = int(ck.get("n_items", 0))
     return start_epoch, best_val, n_users_ck, n_items_ck, ck.get("cfg", None)
-
-import os, pandas as pd, torch, numpy as np
-from torch.utils.data import DataLoader
 
 @torch.no_grad()
 def validate_epoch(model, device, cfg, dl_val: DataLoader, *, n_items: int, epoch: int):
@@ -246,7 +244,7 @@ def main():
         # safety if features are for a superset: slice rows we have
         if feats_np.shape[0] != n_items:
             feats_np = feats_np[:n_items]
-        model.attach_item_features(torch.from_numpy(feats_np), freeze=bool(cfg["model"].get("freeze_item_feats", True)))
+        model.attach_item_features(torch.from_numpy(feats_np), freeze=bool(cfg["model"].get("freeze_item_feats", False)))
         print(f"[features] attached item features: shape={tuple(feats_np.shape)}")
 
     # Device (safe)
@@ -313,7 +311,7 @@ def main():
             print(f"[warn] Failed to resume from {args.resume}: {e}")
 
     # Training loop
-    best_rmse = -1.0
+    best_hr10 = 0
     epochs_no_improve = 0
     patience = int(cfg["optim"].get("early_stopping_patience", 3))
 
@@ -341,17 +339,17 @@ def main():
         })
 
         # --- checkpointing by RMSE ---
-        cur = val_metrics["rmse"]
+        cur = val_metrics["hr@10"]
         is_best = cur < best_val - 1e-6
         if is_best:
-            best_rmse = cur
+            best_hr10 = cur
             epochs_no_improve = 0
             save_ckpt(
                 path=os.path.join(run_dir, "best.ckpt"),
                 model=model,
                 opt=opt,
                 epoch=epoch,
-                best_val=best_rmse,
+                best_val=best_hr10,
                 n_users=n_users,
                 n_items=n_items,
                 cfg=cfg,
@@ -366,20 +364,20 @@ def main():
             model=model,
             opt=opt,
             epoch=epoch,
-            best_val=best_rmse,
+            best_val=best_hr10,
             n_users=n_users,
             n_items=n_items,
             cfg=cfg,
         )
 
 
-        print(f"epoch {epoch:02d} | train loss {train_loss:.4f} | "
+        print(f"epoch {epoch:02d} | train loss RMSE {train_loss:.4f} | "
             f"val RMSE {val_metrics['rmse']:.4f} | HR@10 {val_metrics['hr@10']:.4f} | "
-            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | best RMSE {best_rmse:.4f}")
+            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | best HR@10 {best_hr10:.4f}")
 
-        # --- early stopping on RMSE ---
+        # --- early stopping on HR@10 ---
         if patience > 0 and epochs_no_improve >= patience:
-            print(f"[early-stop] no RMSE improvement for {patience} epochs")
+            print(f"[early-stop] no HR@10 improvement for {patience} epochs")
             break
 
 if __name__ == "__main__":

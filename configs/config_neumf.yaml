@@ -12,28 +12,23 @@ recsys:
 
 model:
   name: neumf
-  mf_dim: 64
-  mlp_layers: [128, 64, 32, 16]
-  dropout: 0.10
+  mf_dim: 32
+  mlp_layers: [128, 64]
+  dropout: 0.20
   user_bias: true
   item_bias: true
 
   # --- features into NeuMF (optional) ---
-  item_feat_layers: [64]
-  freeze_item_feats: true
+  item_feat_layers: [32]
+  freeze_item_feats: false
 
 optim:
-  batch_size: 4096
+  batch_size: 65536
   lr: 1.0e-3
   weight_decay: 1.0e-5
-  epochs: 20
+  epochs: 50
   early_stopping_patience: 3
   amp: true
-
-itemcf:                      # used when model.name == itemcf
-  k: 100
-  shrink: 50.0
-  clip: [1.0, 10.0]
 
 log:
   dir: runs
