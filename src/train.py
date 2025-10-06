@@ -225,7 +225,15 @@ def main():
     seed_all(cfg.get("seed", 42))
 
     optim_cfg = cfg.get("optim", {})
-    metric_alias = str(optim_cfg.get("early_stopping_metric", "rmse")).lower()
+    loss_type = str(optim_cfg.get("loss", "mse")).lower()
+    if loss_type not in {"mse", "bpr"}:
+        raise ValueError(f"Unsupported loss type: {loss_type}")
+
+    metric_default = "hr@10" if loss_type == "bpr" else "rmse"
+    metric_cfg = optim_cfg.get("early_stopping_metric", "auto")
+    metric_alias = str(metric_cfg).lower()
+    if metric_alias == "auto":
+        metric_alias = metric_default
     if metric_alias in {"rmse"}:
         early_stop_metric = "rmse"
     elif metric_alias in {"hr@10", "hr10", "hr"}:
@@ -259,6 +267,12 @@ def main():
     if n_users == 0 or n_items == 0:
         raise RuntimeError("Empty dataset: n_users or n_items is zero.")
 
+    user_pos: list[set[int]] = []
+    if loss_type == "bpr":
+        user_pos = [set() for _ in range(n_users)]
+        for u_id, i_id in zip(train_ds.u.tolist(), train_ds.i.tolist()):
+            user_pos[int(u_id)].add(int(i_id))
+
     # Model
     model = build_model(cfg, n_users, n_items)
 
@@ -289,7 +303,7 @@ def main():
         lr=float(cfg["optim"]["lr"]),
         weight_decay=float(cfg["optim"].get("weight_decay", 0.0)),
     )
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss() if loss_type == "mse" else None
 
     # Dataloaders
     dl_train = DataLoader(
@@ -335,14 +349,38 @@ def main():
     epochs_no_improve = 0
     patience = int(optim_cfg.get("early_stopping_patience", 3))
 
+    def sample_negatives(users: torch.Tensor) -> torch.Tensor:
+        if loss_type != "bpr":
+            raise RuntimeError("sample_negatives called while not using BPR")
+        users_cpu = users.detach().cpu().tolist()
+        neg = torch.randint(0, n_items, (len(users_cpu),), device=device)
+        for idx, u in enumerate(users_cpu):
+            attempts = 0
+            if not user_pos[u]:
+                continue
+            while int(neg[idx].item()) in user_pos[u]:
+                neg[idx] = torch.randint(0, n_items, (), device=device)
+                attempts += 1
+                if attempts > 10:
+                    break
+        return neg
+
+    train_metric_label = "loss (BPR)" if loss_type == "bpr" else "loss (RMSE)"
+
     for epoch in range(1, cfg["optim"]["epochs"] + 1):
         model.train()
         train_loss = 0.0; steps = 0
         for u, i, r in dl_train:
             u, i, r = u.to(device), i.to(device), r.to(device)
             opt.zero_grad(set_to_none=True)
-            pred = model(u, i)
-            loss = loss_fn(pred, r)
+            if loss_type == "mse":
+                pred = model(u, i)
+                loss = loss_fn(pred, r)
+            else:  # BPR
+                neg_items = sample_negatives(u)
+                pos_scores = model(u, i)
+                neg_scores = model(u, neg_items)
+                loss = -torch.nn.functional.logsigmoid(pos_scores - neg_scores).mean()
             loss.backward()
             opt.step()
             train_loss += loss.item(); steps += 1
@@ -400,7 +438,7 @@ def main():
 
 
         print(
-            f"epoch {epoch:02d} | train loss RMSE {train_loss:.4f} | "
+            f"epoch {epoch:02d} | train {train_metric_label} {train_loss:.4f} | "
             f"val RMSE {cur_rmse:.4f} | HR@10 {cur_hr10:.4f} | "
             f"NDCG@10 {val_metrics['ndcg@10']:.4f} | "
             f"best RMSE {best_rmse:.4f} | best HR@10 {best_hr10:.4f} | "

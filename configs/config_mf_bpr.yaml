@@ -1,5 +1,5 @@
 seed: 42
-exp_name: two_tower
+exp_name: mf_bpr
 
 recsys:
   dataset_csv: data/raw/ratings.csv
@@ -11,22 +11,19 @@ recsys:
   topk: [10, 20]
 
 model:
-  name: two_tower
-  embed_dim: 64
-  user_layers: [128, 64]
-  item_layers: [128, 64]
-  dropout: 0.10
+  name: mf
+  mf_dim: 64
   user_bias: true
   item_bias: true
 
 optim:
-  batch_size: 4096
+  batch_size: 65536
   lr: 1.0e-3
   weight_decay: 1.0e-5
   epochs: 50
-  early_stopping_patience: 5
+  early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10
-  loss: mse                     # mse | bpr
+  loss: bpr                     # mse | bpr
   amp: true
 
 log:

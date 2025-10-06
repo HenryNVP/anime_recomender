@@ -34,3 +34,19 @@ python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs
 
 # 6) Serve Recommendations
 python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 123 --k 10
+
+# Optional: BPR Loss
+# Set optim.loss: bpr in any config (or use configs/config_*_bpr.yaml) to optimise Bayesian Personalized Ranking.
+
+# Batch Variants Helper
+# Run all variants for MF, NeuMF, and Two-Tower (writes to runs/variants/...)
+./scripts/train_variants.sh
+
+# Or target specific configs / custom output root
+./scripts/train_variants.sh custom_runs configs/config_mf.yaml configs/config_twotower.yaml
+
+# Evaluate All Models
+# Writes per-model metrics + summary table under runs/evaluation/<timestamp>
+./scripts/evaluate_all.sh
+# Customise destinations or configs (eval_root, variants_root, configs...)
+./scripts/evaluate_all.sh custom_eval_root runs/variants configs/config_mf.yaml

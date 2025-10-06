@@ -1,5 +1,5 @@
 seed: 42
-exp_name: two_tower
+exp_name: two_tower_bpr
 
 recsys:
   dataset_csv: data/raw/ratings.csv
@@ -26,7 +26,7 @@ optim:
   epochs: 50
   early_stopping_patience: 5
   early_stopping_metric: auto   # auto | rmse | hr@10
-  loss: mse                     # mse | bpr
+  loss: bpr                     # mse | bpr
   amp: true
 
 log:
