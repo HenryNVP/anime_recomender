@@ -389,6 +389,27 @@ def main():
     # 4) reindex & (if anime) keep only rated items
     ratings, anime_keep, uid_map, iid_map = _reindex_ids(ratings, anime)
 
+    def _summary_stats(df: pd.DataFrame, *, columns: list[str] | None = None) -> dict:
+        stats = {"count": int(len(df))}
+        if len(df) > 0:
+            if "user_id" in df.columns:
+                stats["n_users"] = int(df["user_id"].nunique())
+            if "anime_id" in df.columns:
+                stats["n_items"] = int(df["anime_id"].nunique())
+        if columns and len(df) > 0:
+            for col in columns:
+                if col in df.columns:
+                    series = pd.to_numeric(df[col], errors="coerce").dropna()
+                    if len(series) == 0:
+                        continue
+                    stats[col] = {
+                        "mean": float(series.mean()),
+                        "std": float(series.std(ddof=0)),
+                        "min": float(series.min()),
+                        "max": float(series.max()),
+                    }
+        return stats
+
     # 5) (optional) impute anime metadata + build features
     if anime_keep is not None:
         anime_keep = _impute_missing_values(anime_keep)
@@ -418,6 +439,23 @@ def main():
     train.to_csv(os.path.join(a.out_dir, "splits", "train.csv"), index=False)
     val.to_csv(  os.path.join(a.out_dir, "splits", "val.csv"),   index=False)
     test.to_csv( os.path.join(a.out_dir, "splits", "test.csv"),  index=False)
+
+    # dataset summaries
+    outputs_dir = os.path.join(a.out_dir, "outputs")
+    os.makedirs(outputs_dir, exist_ok=True)
+    meta_general = {
+        "ratings": _summary_stats(ratings, columns=["rating"]),
+        "splits": {
+            "train": _summary_stats(train, columns=["rating"]),
+            "val": _summary_stats(val, columns=["rating"]),
+            "test": _summary_stats(test, columns=["rating"]),
+        },
+    }
+    if anime_keep is not None:
+        meta_general["anime"] = _summary_stats(anime_keep, columns=["rating", "episodes", "members"])
+
+    with open(os.path.join(outputs_dir, "dataset_meta.json"), "w") as f:
+        json.dump(meta_general, f, indent=2)
 
     # 9) quick stats
     n_users = ratings["user_id"].nunique()

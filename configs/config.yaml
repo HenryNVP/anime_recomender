@@ -18,16 +18,13 @@ model:
   user_bias: true
   item_bias: true
 
-  # --- features into NeuMF (optional) ---
-  item_feat_layers: [128]   # [] or omit to disable feature tower
-  freeze_item_feats: true   # register as buffer; not trainable
-
 optim:
   batch_size: 4096
   lr: 1.0e-3
   weight_decay: 1.0e-5
   epochs: 50
   early_stopping_patience: 3
+  early_stopping_metric: rmse   # rmse | hr@10
   amp: true
 
 itemcf:                      # used when model.name == itemcf

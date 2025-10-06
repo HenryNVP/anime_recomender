@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch, torch.nn as nn, torch.nn.functional as F
 
 class MF(nn.Module):
-    def __init__(self, n_users: int, n_items: int, dim: int = 64, user_bias: bool=True, item_bias: bool=True):
+    def __init__(self, n_users: int, n_items: int, dim: int = 32, user_bias: bool=True, item_bias: bool=True):
         super().__init__()
         self.P = nn.Embedding(n_users, dim)
         self.Q = nn.Embedding(n_items, dim)

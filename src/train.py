@@ -72,7 +72,7 @@ def build_model(cfg: dict, n_users: int, n_items: int) -> torch.nn.Module:
         return MF(
             n_users=n_users,
             n_items=n_items,
-            dim=int(m.get("mf_dim", 64)),
+            dim=int(m.get("mf_dim", 32)),
             user_bias=bool(m.get("user_bias", True)),
             item_bias=bool(m.get("item_bias", True)),
         )
@@ -212,9 +212,21 @@ def main():
     # Repro
     seed_all(cfg.get("seed", 42))
 
+    optim_cfg = cfg.get("optim", {})
+    metric_alias = str(optim_cfg.get("early_stopping_metric", "rmse")).lower()
+    if metric_alias in {"rmse"}:
+        early_stop_metric = "rmse"
+    elif metric_alias in {"hr@10", "hr10", "hr"}:
+        early_stop_metric = "hr@10"
+    else:
+        raise ValueError(f"Unsupported early_stopping_metric: {metric_alias}")
+    metric_display = "RMSE" if early_stop_metric == "rmse" else "HR@10"
+
     # Paths / run dir
     base_runs = cfg["log"]["dir"]
-    exp_name = cfg.get("neumf_name", "neumf")
+    model_cfg = cfg.get("model", {})
+    model_name = str(model_cfg.get("name", "neumf")).lower()
+    exp_name = cfg.get("exp_name") or model_name
     if args.run_dir:
         run_dir = args.run_dir
         os.makedirs(run_dir, exist_ok=True)
@@ -237,15 +249,6 @@ def main():
 
     # Model
     model = build_model(cfg, n_users, n_items)
-    # ---- attach item features if configured ----
-    feat_path = cfg["recsys"].get("item_features_path")
-    if feat_path and os.path.exists(feat_path) and isinstance(model, NeuMF):
-        feats_np = np.load(feat_path).astype("float32", copy=False)   # (n_items, F)
-        # safety if features are for a superset: slice rows we have
-        if feats_np.shape[0] != n_items:
-            feats_np = feats_np[:n_items]
-        model.attach_item_features(torch.from_numpy(feats_np), freeze=bool(cfg["model"].get("freeze_item_feats", False)))
-        print(f"[features] attached item features: shape={tuple(feats_np.shape)}")
 
     # Device (safe)
     device = get_device(args.device)
@@ -296,7 +299,9 @@ def main():
 
     # Resume if requested
     start_epoch = 1
-    best_val = math.inf
+    best_metric_val = math.inf if early_stop_metric == "rmse" else -math.inf
+    best_rmse = math.inf
+    best_hr10 = 0.0
     if args.resume and os.path.exists(args.resume):
         try:
             se, bv, n_users_ck, n_items_ck, _cfg_ck = load_ckpt_for_resume(args.resume, model, opt)
@@ -305,15 +310,18 @@ def main():
                 f"vs data {n_users}/{n_items}"
             )
             start_epoch = se
-            best_val = bv
-            print(f"[resume] {args.resume} -> epoch {start_epoch} (best_val={best_val:.6f})")
+            best_metric_val = bv
+            if early_stop_metric == "rmse":
+                best_rmse = min(best_rmse, bv)
+            else:
+                best_hr10 = max(best_hr10, bv)
+            print(f"[resume] {args.resume} -> epoch {start_epoch} ({metric_display} best={best_metric_val:.6f})")
         except Exception as e:
             print(f"[warn] Failed to resume from {args.resume}: {e}")
 
     # Training loop
-    best_hr10 = 0
     epochs_no_improve = 0
-    patience = int(cfg["optim"].get("early_stopping_patience", 3))
+    patience = int(optim_cfg.get("early_stopping_patience", 3))
 
     for epoch in range(1, cfg["optim"]["epochs"] + 1):
         model.train()
@@ -338,18 +346,23 @@ def main():
             "ndcg@10": val_metrics["ndcg@10"],
         })
 
-        # --- checkpointing by RMSE ---
-        cur = val_metrics["hr@10"]
-        is_best = cur < best_val - 1e-6
-        if is_best:
-            best_hr10 = cur
+        # --- checkpointing ---
+        cur_rmse = val_metrics["rmse"]
+        cur_hr10 = val_metrics["hr@10"]
+        if early_stop_metric == "rmse":
+            improved = cur_rmse < best_metric_val - 1e-6
+        else:
+            improved = cur_hr10 > best_metric_val + 1e-6
+
+        if improved:
+            best_metric_val = cur_rmse if early_stop_metric == "rmse" else cur_hr10
             epochs_no_improve = 0
             save_ckpt(
                 path=os.path.join(run_dir, "best.ckpt"),
                 model=model,
                 opt=opt,
                 epoch=epoch,
-                best_val=best_hr10,
+                best_val=best_metric_val,
                 n_users=n_users,
                 n_items=n_items,
                 cfg=cfg,
@@ -358,26 +371,33 @@ def main():
         else:
             epochs_no_improve += 1
 
+        best_rmse = min(best_rmse, cur_rmse)
+        best_hr10 = max(best_hr10, cur_hr10)
+
         # always save last
         save_ckpt(
             path=os.path.join(run_dir, "last.ckpt"),
             model=model,
             opt=opt,
             epoch=epoch,
-            best_val=best_hr10,
+            best_val=best_metric_val,
             n_users=n_users,
             n_items=n_items,
             cfg=cfg,
         )
 
 
-        print(f"epoch {epoch:02d} | train loss RMSE {train_loss:.4f} | "
-            f"val RMSE {val_metrics['rmse']:.4f} | HR@10 {val_metrics['hr@10']:.4f} | "
-            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | best HR@10 {best_hr10:.4f}")
+        print(
+            f"epoch {epoch:02d} | train loss RMSE {train_loss:.4f} | "
+            f"val RMSE {cur_rmse:.4f} | HR@10 {cur_hr10:.4f} | "
+            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | "
+            f"best RMSE {best_rmse:.4f} | best HR@10 {best_hr10:.4f} | "
+            f"early-stop {metric_display} {best_metric_val:.4f}"
+        )
 
-        # --- early stopping on HR@10 ---
+        # --- early stopping ---
         if patience > 0 and epochs_no_improve >= patience:
-            print(f"[early-stop] no HR@10 improvement for {patience} epochs")
+            print(f"[early-stop] no {metric_display} improvement for {patience} epochs")
             break
 
 if __name__ == "__main__":

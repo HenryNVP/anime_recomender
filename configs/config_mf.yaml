@@ -13,7 +13,6 @@ recsys:
 model:
   name: mf
   mf_dim: 64
-  dropout: 0.10
   user_bias: true
   item_bias: true
 
@@ -23,6 +22,7 @@ optim:
   weight_decay: 1.0e-5
   epochs: 50
   early_stopping_patience: 3
+  early_stopping_metric: rmse   # rmse | hr@10
   amp: true
 
 log:
