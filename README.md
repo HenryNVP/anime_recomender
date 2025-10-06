@@ -31,3 +31,6 @@ python -m src.train --config configs/config_twotower.yaml
 
 # Evaluate Two-Tower
 python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs/config_twotower.yaml
+
+# 6) Serve Recommendations
+python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 123 --k 10
