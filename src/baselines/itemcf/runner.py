@@ -69,6 +69,15 @@ def train_from_splits(
     model = ItemCF(k=k, shrink=shrink, clip=(clip_min, clip_max))
     model.fit_from_df(train, n_users=n_users, n_items=n_items)
 
+    # cache reusable artifacts for evaluation
+    absS = model.S.copy()
+    absS.data = np.abs(absS.data, dtype=np.float32)
+    denom = np.ravel(np.asarray(absS.sum(axis=1))).astype(np.float32)
+    np.save(out_prefix + ".denom.npy", denom)
+
+    pop = _item_popularity_from_train(splits, n_items)
+    np.save(out_prefix + ".pop.npy", pop.astype(np.int64))
+
     metrics: Dict[str, float] = {}
     if eval_on in ("val", "test"):
         split_path = os.path.join(splits, f"{eval_on}.csv")
@@ -118,12 +127,20 @@ def eval_from_splits(
     # ---------- Ranking ----------
     n_items = model.n_items
     Ks = sorted(set(k_list or [10, 20]))
-    absS = model.S.copy()
-    absS.data = np.abs(absS.data, dtype=np.float32)
-    denom = np.ravel(np.asarray(absS.sum(axis=1))).astype(np.float32) + 1e-12
+    denom_path = model_prefix + ".denom.npy"
+    if os.path.exists(denom_path):
+        denom = np.load(denom_path).astype(np.float32) + 1e-12
+    else:
+        absS = model.S.copy()
+        absS.data = np.abs(absS.data, dtype=np.float32)
+        denom = np.ravel(np.asarray(absS.sum(axis=1))).astype(np.float32) + 1e-12
     seen = _load_seen_sets(splits_dir, also_exclude_val) if exclude_seen else {}
     gt_pos = _ground_truth_pos(df, pos_threshold)
-    pop = _item_popularity_from_train(splits_dir, n_items)
+    pop_path = model_prefix + ".pop.npy"
+    if os.path.exists(pop_path):
+        pop = np.load(pop_path).astype(np.int64)
+    else:
+        pop = _item_popularity_from_train(splits_dir, n_items)
 
     users = sorted(gt_pos.keys())
     if max_users and max_users > 0:
