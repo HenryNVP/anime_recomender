@@ -20,6 +20,7 @@ import yaml
 
 from src.recsys.models.mf import MF
 from src.recsys.models.neumf import NeuMF
+from src.recsys.models.twotower import TwoTower
 from src.recsys.metrics import hit_rate_at_k, ndcg_at_k, precision_recall_at_k, average_precision_at_k
 from src.utils import get_device
 
@@ -71,7 +72,7 @@ def load_model_from_ckpt(ckpt_path: str, device: str) -> Tuple[torch.nn.Module, 
             user_bias=bool(cfg_ck["model"].get("user_bias", True)),
             item_bias=bool(cfg_ck["model"].get("item_bias", True)),
         )
-    else:
+    elif name == "neumf":
         model = NeuMF(
             n_users, n_items,
             mf_dim=int(cfg_ck["model"].get("mf_dim", 32)),
@@ -80,6 +81,19 @@ def load_model_from_ckpt(ckpt_path: str, device: str) -> Tuple[torch.nn.Module, 
             user_bias=bool(cfg_ck["model"].get("user_bias", True)),
             item_bias=bool(cfg_ck["model"].get("item_bias", True)),
         )
+    elif name in {"two_tower", "twotower"}:
+        model = TwoTower(
+            n_users=n_users,
+            n_items=n_items,
+            embed_dim=int(cfg_ck["model"].get("embed_dim", cfg_ck["model"].get("mf_dim", 64))),
+            user_layers=tuple(cfg_ck["model"].get("user_layers", [])),
+            item_layers=tuple(cfg_ck["model"].get("item_layers", [])),
+            dropout=float(cfg_ck["model"].get("dropout", 0.0)),
+            user_bias=bool(cfg_ck["model"].get("user_bias", True)),
+            item_bias=bool(cfg_ck["model"].get("item_bias", True)),
+        )
+    else:
+        raise ValueError(f"Unsupported model for eval: {name}")
 
     model.load_state_dict(ck["state_dict"])
     model.to(device).eval()

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 class NeuMF(nn.Module):
-    """Hybrid MF/MLP recommender following NeuMF without auxiliary towers."""
+    """Hybrid MF/MLP recommender following NeuMF"""
 
     def __init__(
         self,

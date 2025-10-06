@@ -18,9 +18,16 @@ python -m src.train --config configs/config_neumf.yaml
 # Evaluate NeuMF
 python -m src.eval --ckpt runs/neumf/[latest_run]/best.ckpt --config configs/config_neumf.yaml
 
-# 4) (Optional) MF
+# 4) MF
 # Train MF
 python -m src.train --config configs/config_mf.yaml
 
 # Evaluate MF
 python -m src.eval --ckpt runs/neumf/[latest_run]/best.ckpt --config configs/config_mf.yaml
+
+# 5) Two-Tower
+# Train Two-Tower
+python -m src.train --config configs/config_twotower.yaml
+
+# Evaluate Two-Tower
+python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs/config_twotower.yaml

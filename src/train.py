@@ -27,6 +27,7 @@ from tqdm import tqdm
 from src.recsys.ratingds import RatingsDS
 from src.recsys.models.mf import MF
 from src.recsys.models.neumf import NeuMF
+from src.recsys.models.twotower import TwoTower
 from src.utils import seed_all, Logger, get_device
 from src.recsys import metrics
 
@@ -83,6 +84,17 @@ def build_model(cfg: dict, n_users: int, n_items: int) -> torch.nn.Module:
             mf_dim=int(m.get("mf_dim", 32)),
             mlp_layers=tuple(m.get("mlp_layers", [128, 64])),
             dropout=float(m.get("dropout", 0.1)),
+            user_bias=bool(m.get("user_bias", True)),
+            item_bias=bool(m.get("item_bias", True)),
+        )
+    elif name in {"two_tower", "twotower"}:
+        return TwoTower(
+            n_users=n_users,
+            n_items=n_items,
+            embed_dim=int(m.get("embed_dim", m.get("mf_dim", 64))),
+            user_layers=tuple(m.get("user_layers", [])),
+            item_layers=tuple(m.get("item_layers", [])),
+            dropout=float(m.get("dropout", 0.0)),
             user_bias=bool(m.get("user_bias", True)),
             item_bias=bool(m.get("item_bias", True)),
         )

@@ -1,5 +1,5 @@
 seed: 42
-exp_name: anime_exp1
+exp_name: two_tower
 
 recsys:
   dataset_csv: data/raw/ratings.csv
@@ -11,9 +11,10 @@ recsys:
   topk: [10, 20]
 
 model:
-  name: neumf         # mf | neumf | two_tower
-  mf_dim: 64
-  mlp_layers: [128, 64]
+  name: two_tower
+  embed_dim: 64
+  user_layers: [128, 64]
+  item_layers: [128, 64]
   dropout: 0.10
   user_bias: true
   item_bias: true
@@ -23,14 +24,9 @@ optim:
   lr: 1.0e-3
   weight_decay: 1.0e-5
   epochs: 50
-  early_stopping_patience: 3
+  early_stopping_patience: 5
   early_stopping_metric: rmse   # rmse | hr@10
   amp: true
-
-itemcf:                      # used when model.name == itemcf
-  k: 100
-  shrink: 50.0
-  clip: [1.0, 10.0]
 
 log:
   dir: runs
