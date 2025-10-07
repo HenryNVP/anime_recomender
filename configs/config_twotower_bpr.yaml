@@ -24,7 +24,7 @@ optim:
   lr: 1.0e-3
   weight_decay: 1.0e-5
   epochs: 50
-  early_stopping_patience: 5
+  early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10
   loss: bpr                     # mse | bpr
   amp: true
