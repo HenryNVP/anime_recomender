@@ -2,6 +2,25 @@ from __future__ import annotations
 import argparse, os, json
 from .runner import eval_from_splits
 
+
+def _normalize_metrics(metrics: dict) -> dict:
+    """Convert ItemCF metrics to the aggregate JSON schema (uppercase keys, str Ks)."""
+    rating_norm = {}
+    rating = metrics.get("rating") or {}
+    for key_src, key_dst in (("rmse", "RMSE"), ("mae", "MAE")):
+        if key_src in rating and rating[key_src] is not None:
+            rating_norm[key_dst] = float(rating[key_src])
+
+    ranking_norm = {}
+    for k, values in (metrics.get("ranking") or {}).items():
+        key = str(k)
+        ranking_norm[key] = {}
+        for metric_key in ("HR", "NDCG", "P", "R", "MAP"):
+            val = values.get(metric_key)
+            if val is not None:
+                ranking_norm[key][metric_key] = float(val)
+    return {"rating": rating_norm, "ranking": ranking_norm}
+
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate ItemCF baseline")
     p.add_argument("--model_prefix", default="outputs/itemcf")
@@ -31,9 +50,11 @@ def main():
 
     # Save metrics
     if a.out_json:
-        os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
+        out_dir = os.path.dirname(os.path.abspath(a.out_json))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         with open(a.out_json, "w", encoding="utf-8") as f:
-            json.dump(res, f, indent=2)
+            json.dump(_normalize_metrics(res), f, indent=2)
         print(f"[saved] {a.out_json}")
 
     # Print RMSE / MAE

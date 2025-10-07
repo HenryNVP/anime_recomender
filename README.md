@@ -64,5 +64,6 @@ python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/
 # Evaluate All Models
 # Writes per-model metrics + summary table under runs/evaluation/<timestamp>
 ./scripts/evaluate_all.sh
+# Includes ItemCF baseline automatically (set ITEMCF_ENABLED=0 to skip).
 # Customise destinations or configs (eval_root, variants_root, configs...)
 ./scripts/evaluate_all.sh custom_eval_root runs/variants configs/config_mf.yaml

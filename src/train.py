@@ -229,18 +229,21 @@ def main():
     if loss_type not in {"mse", "bpr"}:
         raise ValueError(f"Unsupported loss type: {loss_type}")
 
-    metric_default = "hr@10" if loss_type == "bpr" else "rmse"
+    metric_default = "ndcg@10" if loss_type == "bpr" else "rmse"
     metric_cfg = optim_cfg.get("early_stopping_metric", "auto")
     metric_alias = str(metric_cfg).lower()
     if metric_alias == "auto":
         metric_alias = metric_default
     if metric_alias in {"rmse"}:
         early_stop_metric = "rmse"
+    elif metric_alias in {"ndcg@10", "ndcg10", "ndcg"}:
+        early_stop_metric = "ndcg@10"
     elif metric_alias in {"hr@10", "hr10", "hr"}:
         early_stop_metric = "hr@10"
     else:
         raise ValueError(f"Unsupported early_stopping_metric: {metric_alias}")
-    metric_display = "RMSE" if early_stop_metric == "rmse" else "HR@10"
+    metric_display = {"rmse": "RMSE", "hr@10": "HR@10", "ndcg@10": "NDCG@10"}[early_stop_metric]
+    maximize_metric = early_stop_metric != "rmse"
 
     # Paths / run dir
     base_runs = cfg["log"]["dir"]
@@ -325,9 +328,10 @@ def main():
 
     # Resume if requested
     start_epoch = 1
-    best_metric_val = math.inf if early_stop_metric == "rmse" else -math.inf
+    best_metric_val = math.inf if not maximize_metric else -math.inf
     best_rmse = math.inf
     best_hr10 = 0.0
+    best_ndcg10 = 0.0
     if args.resume and os.path.exists(args.resume):
         try:
             se, bv, n_users_ck, n_items_ck, _cfg_ck = load_ckpt_for_resume(args.resume, model, opt)
@@ -339,8 +343,10 @@ def main():
             best_metric_val = bv
             if early_stop_metric == "rmse":
                 best_rmse = min(best_rmse, bv)
-            else:
+            elif early_stop_metric == "hr@10":
                 best_hr10 = max(best_hr10, bv)
+            else:
+                best_ndcg10 = max(best_ndcg10, bv)
             print(f"[resume] {args.resume} -> epoch {start_epoch} ({metric_display} best={best_metric_val:.6f})")
         except Exception as e:
             print(f"[warn] Failed to resume from {args.resume}: {e}")
@@ -399,13 +405,19 @@ def main():
         # --- checkpointing ---
         cur_rmse = val_metrics["rmse"]
         cur_hr10 = val_metrics["hr@10"]
-        if early_stop_metric == "rmse":
-            improved = cur_rmse < best_metric_val - 1e-6
+        cur_ndcg10 = val_metrics["ndcg@10"]
+        cur_metric = {
+            "rmse": cur_rmse,
+            "hr@10": cur_hr10,
+            "ndcg@10": cur_ndcg10,
+        }[early_stop_metric]
+        if maximize_metric:
+            improved = cur_metric > best_metric_val + 1e-6
         else:
-            improved = cur_hr10 > best_metric_val + 1e-6
+            improved = cur_metric < best_metric_val - 1e-6
 
         if improved:
-            best_metric_val = cur_rmse if early_stop_metric == "rmse" else cur_hr10
+            best_metric_val = cur_metric
             epochs_no_improve = 0
             save_ckpt(
                 path=os.path.join(run_dir, "best.ckpt"),
@@ -423,6 +435,7 @@ def main():
 
         best_rmse = min(best_rmse, cur_rmse)
         best_hr10 = max(best_hr10, cur_hr10)
+        best_ndcg10 = max(best_ndcg10, cur_ndcg10)
 
         # always save last
         save_ckpt(
@@ -440,8 +453,9 @@ def main():
         print(
             f"epoch {epoch:02d} | train {train_metric_label} {train_loss:.4f} | "
             f"val RMSE {cur_rmse:.4f} | HR@10 {cur_hr10:.4f} | "
-            f"NDCG@10 {val_metrics['ndcg@10']:.4f} | "
+            f"NDCG@10 {cur_ndcg10:.4f} | "
             f"best RMSE {best_rmse:.4f} | best HR@10 {best_hr10:.4f} | "
+            f"best NDCG@10 {best_ndcg10:.4f} | "
             f"early-stop {metric_display} {best_metric_val:.4f}"
         )
 

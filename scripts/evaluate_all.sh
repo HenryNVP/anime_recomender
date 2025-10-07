@@ -3,6 +3,18 @@ set -euo pipefail
 
 OUT_ROOT="runs/evaluation"
 VARIANTS_ROOT="runs/variants"
+ITEMCF_ENABLED=${ITEMCF_ENABLED:-1}
+ITEMCF_MODEL_PREFIX=${ITEMCF_MODEL_PREFIX:-runs/itemcf/anime}
+ITEMCF_SPLITS_DIR=${ITEMCF_SPLITS_DIR:-data/processed/splits}
+ITEMCF_VARIANT=${ITEMCF_VARIANT:-baseline}
+ITEMCF_SPLIT=${ITEMCF_SPLIT:-test}
+ITEMCF_K_LIST=${ITEMCF_K_LIST:-10,20}
+ITEMCF_EVAL_ARGS_STR=${ITEMCF_EVAL_ARGS_STR:-}
+ITEMCF_EVAL_ARGS=()
+if [[ -n "$ITEMCF_EVAL_ARGS_STR" ]]; then
+  # shellcheck disable=SC2206
+  ITEMCF_EVAL_ARGS=($ITEMCF_EVAL_ARGS_STR)
+fi
 
 if (($# > 0)) && [[ $1 != *.yaml ]]; then
   OUT_ROOT=$1
@@ -111,6 +123,24 @@ for cfg in "${CONFIGS[@]}"; do
     fi
   done
 done
+
+if (( ITEMCF_ENABLED )); then
+  metrics_file="${dest_dir}/itemcf__${ITEMCF_VARIANT}.json"
+  log_file="${dest_dir}/itemcf__${ITEMCF_VARIANT}.log"
+  echo "[eval] itemcf (${ITEMCF_VARIANT}) -> $metrics_file"
+  if python3 -m src.baselines.itemcf.eval \
+      --model_prefix "$ITEMCF_MODEL_PREFIX" \
+      --splits_dir "$ITEMCF_SPLITS_DIR" \
+      --split "$ITEMCF_SPLIT" \
+      --k "$ITEMCF_K_LIST" \
+      --out_json "$metrics_file" \
+      "${ITEMCF_EVAL_ARGS[@]}" 2>&1 | tee "$log_file"; then
+    METRIC_FILES+=("$metrics_file")
+  else
+    echo "[warn] itemcf evaluation failed (see $log_file)" >&2
+    rm -f "$metrics_file"
+  fi
+fi
 
 if ((${#METRIC_FILES[@]} == 0)); then
   echo "[warn] no evaluation metrics produced" >&2
