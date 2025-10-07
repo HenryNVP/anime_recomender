@@ -1,3 +1,19 @@
+# Anime Recommender
+Item-based Collaborative Filtering | Matrix Factorization | Neural Matrix Factorization (NeuMF) | Two-Tower
+
+✨ Highlights
+
+- Models: Matrix Factorization (MF), NeuMF, Two-Tower, and ItemCF baseline.
+
+- Objectives: MSE (explicit ratings), BPR (implicit ranking), and MSE→BPR fine-tune.
+
+- Reproducible runs: auto-timestamped run dirs, TensorBoard logs, best/last checkpoints.
+
+- Batch evaluation: generate a single summary table (RMSE/MAE + HR@K/NDCG@K) across all variants.
+
+- Feature support: plug item features (item_feats.npy) directly into NeuMF’s MLP tower.
+
+
 # 1) Preprocess data
 python scripts/preprocess_data.py --data_dir data/demo --out_dir data/processed --build_item_features --check
 
