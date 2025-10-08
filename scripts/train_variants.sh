@@ -23,11 +23,35 @@ if [[ -n "$ITEMCF_TRAIN_ARGS_STR" ]]; then
   ITEMCF_TRAIN_ARGS=($ITEMCF_TRAIN_ARGS_STR)
 fi
 
+itemcf_ran=0
+run_itemcf() {
+  if (( itemcf_ran )); then
+    return
+  fi
+  itemcf_ran=1
+  echo "[train] (itemcf) -> $ITEMCF_OUT_PREFIX"
+  itemcf_cmd=(
+    python3 -m src.baselines.itemcf.train
+    --data_dir "$ITEMCF_DATA_DIR"
+    --out_prefix "$ITEMCF_OUT_PREFIX"
+    --k "$ITEMCF_K"
+    --shrink "$ITEMCF_SHRINK"
+    --clip_min "$ITEMCF_CLIP_MIN"
+    --clip_max "$ITEMCF_CLIP_MAX"
+    --eval_on "$ITEMCF_EVAL_ON"
+  )
+  if [[ -n "$ITEMCF_SPLITS_DIR" ]]; then
+    itemcf_cmd+=(--splits_dir "$ITEMCF_SPLITS_DIR")
+  fi
+  itemcf_cmd+=("${ITEMCF_TRAIN_ARGS[@]}")
+  "${itemcf_cmd[@]}"
+}
+
 if (($# == 0)); then
   CONFIGS=(
-    configs/config_mf.yaml
-    configs/config_neumf.yaml
     configs/config_twotower.yaml
+    configs/config_neumf.yaml
+    configs/config_mf.yaml
   )
 else
   CONFIGS=("$@")
@@ -101,6 +125,10 @@ for CONFIG in "${CONFIGS[@]}"; do
     else
       echo "[warn] ($model_id) no checkpoint found in $root_dir/mse; skipping ApproxNDCG fine-tune" >&2
     fi
+
+    if (( ITEMCF_ENABLED )); then
+      run_itemcf
+    fi
   else
     echo "[info] ($model_id) skipping ApproxNDCG fine-tune (Two-Tower only)"
   fi
@@ -109,22 +137,9 @@ for CONFIG in "${CONFIGS[@]}"; do
 done
 
 if (( ITEMCF_ENABLED )); then
-  echo "[train] (itemcf) -> $ITEMCF_OUT_PREFIX"
-  itemcf_cmd=(
-    python3 -m src.baselines.itemcf.train
-    --data_dir "$ITEMCF_DATA_DIR"
-    --out_prefix "$ITEMCF_OUT_PREFIX"
-    --k "$ITEMCF_K"
-    --shrink "$ITEMCF_SHRINK"
-    --clip_min "$ITEMCF_CLIP_MIN"
-    --clip_max "$ITEMCF_CLIP_MAX"
-    --eval_on "$ITEMCF_EVAL_ON"
-  )
-  if [[ -n "$ITEMCF_SPLITS_DIR" ]]; then
-    itemcf_cmd+=(--splits_dir "$ITEMCF_SPLITS_DIR")
+  if (( ! itemcf_ran )); then
+    run_itemcf
   fi
-  itemcf_cmd+=("${ITEMCF_TRAIN_ARGS[@]}")
-  "${itemcf_cmd[@]}"
 else
   echo "[skip] itemcf training disabled"
 fi
