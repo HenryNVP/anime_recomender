@@ -69,15 +69,14 @@ def ndcg_at_k(
     T = _as_sets(true_items)
     R = _clip_k(ranked_items, k)
 
-    def dcg(rel: np.ndarray) -> float:
-        if rel.size == 0: return 0.0
-        denom = np.log2(np.arange(2, rel.size + 2))
-        return float(np.sum(rel / denom))
-
     ndcgs = []
     for t, r in zip(T, R):
-        rel = np.array([1.0 if x in t else 0.0 for x in r], dtype=np.float32)
-        idcg = dcg(np.sort(rel)[::-1])
-        ndcgs.append(dcg(rel) / idcg if idcg > 0 else 0.0)
+        if not t:
+            ndcgs.append(0.0)
+            continue
+        rel = [1.0 if x in t else 0.0 for x in r]
+        dcg = sum(val / np.log2(idx + 2) for idx, val in enumerate(rel))
+        m = min(len(t), k)
+        idcg = sum(1.0 / np.log2(idx + 2) for idx in range(m))
+        ndcgs.append(dcg / idcg if idcg > 0 else 0.0)
     return float(np.mean(ndcgs))
-
