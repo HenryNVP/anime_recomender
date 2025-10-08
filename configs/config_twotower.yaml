@@ -13,8 +13,8 @@ recsys:
 model:
   name: two_tower
   embed_dim: 64
-  user_layers: [128, 64]
-  item_layers: [128, 64]
+  user_layers: [256, 128, 64]
+  item_layers: [256, 128, 64]
   dropout: 0.10
   user_bias: true
   item_bias: true

@@ -12,7 +12,7 @@ recsys:
 
 model:
   name: neumf
-  mf_dim: 32
+  mf_dim: 64
   mlp_layers: [256, 128, 64]
   dropout: 0.20
   user_bias: true

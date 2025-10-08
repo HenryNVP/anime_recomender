@@ -12,7 +12,7 @@ recsys:
 
 model:
   name: mf
-  mf_dim: 32
+  mf_dim: 64
   user_bias: true
   item_bias: true
 
