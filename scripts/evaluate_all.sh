@@ -94,8 +94,6 @@ find_ckpt() {
   return 1
 }
 
-VARIANTS=("mse" "rank" "mse_to_rank")
-
 for cfg in "${CONFIGS[@]}"; do
   if [[ ! -f "$cfg" ]]; then
     echo "[warn] skipping missing config $cfg" >&2
@@ -105,7 +103,12 @@ for cfg in "${CONFIGS[@]}"; do
   cfg_name=$(basename "$cfg")
   model_id=${cfg_name%.yaml}
 
-  for variant in "${VARIANTS[@]}"; do
+  variants=("mse")
+  if [[ "$model_id" == *twotower* ]]; then
+    variants+=("mse_to_rank")
+  fi
+
+  for variant in "${variants[@]}"; do
     ckpt_path=$(find_ckpt "$cfg" "$model_id" "$variant" || true)
     if [[ -z "$ckpt_path" ]]; then
       echo "[warn] no checkpoint found for $model_id ($variant)" >&2

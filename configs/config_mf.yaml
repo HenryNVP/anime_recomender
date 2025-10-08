@@ -20,7 +20,7 @@ optim:
   batch_size: 65536
   lr: 1.0e-3
   weight_decay: 1.0e-5
-  epochs: 10
+  epochs: 50
   early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
   loss: mse                     # mse | approx_ndcg
