@@ -49,7 +49,22 @@ python -m src.train --config configs/config_twotower.yaml
 python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs/config_twotower.yaml
 
 # 6) Serve Recommendations
-python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 123 --k 10
+## CLI (one-off; original user id)
+python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 654321 --k 10
+
+## FastAPI service (multi-model)
+python -m src.serve --http \
+  --model twotower=configs/config_twotower.yaml:runs/two_tower/[latest_run]/best.ckpt \
+  --model mf=configs/config_mf.yaml:runs/mf/[latest_run]/best.ckpt \
+  --port 8080
+
+# Request example (JSON)
+curl -X POST http://localhost:8080/v1/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":654321, "model":"twotower", "k":10, "include_history":true}'
+
+# List loaded models
+curl http://localhost:8080/v1/models
 
 # Optional: ApproxNDCG Loss
 # Set optim.loss: approx_ndcg in any config (or use configs/config_*_rank.yaml) to optimise the differentiable NDCG surrogate.
