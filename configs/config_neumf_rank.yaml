@@ -1,5 +1,5 @@
 seed: 42
-exp_name: mf_bpr
+exp_name: neumf_rank
 
 recsys:
   dataset_csv: data/raw/ratings.csv
@@ -11,8 +11,10 @@ recsys:
   topk: [10, 20]
 
 model:
-  name: mf
-  mf_dim: 64
+  name: neumf
+  mf_dim: 32
+  mlp_layers: [128, 64]
+  dropout: 0.20
   user_bias: true
   item_bias: true
 
@@ -23,7 +25,9 @@ optim:
   epochs: 50
   early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
-  loss: bpr                     # mse | bpr
+  loss: approx_ndcg             # mse | approx_ndcg
+  approx_ndcg_negatives: 100
+  approx_ndcg_temperature: 1.0
   amp: true
 
 log:

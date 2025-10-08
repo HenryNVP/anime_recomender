@@ -94,7 +94,7 @@ find_ckpt() {
   return 1
 }
 
-VARIANTS=("mse" "bpr" "mse_to_bpr")
+VARIANTS=("mse" "rank" "mse_to_rank")
 
 for cfg in "${CONFIGS[@]}"; do
   if [[ ! -f "$cfg" ]]; then

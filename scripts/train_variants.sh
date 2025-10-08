@@ -33,12 +33,13 @@ base, out, loss = sys.argv[1:4]
 with open(base, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 optim = cfg.setdefault("optim", {})
-optim["loss"] = loss
+loss = loss.lower()
+if loss not in {"mse", "approx_ndcg", "rank"}:
+    raise ValueError(f"unsupported loss alias: {loss}")
+loss_value = "approx_ndcg" if loss == "rank" else loss
+optim["loss"] = loss_value
 if optim.get("early_stopping_metric", "auto") == "auto":
-    if loss == "bpr":
-        optim["early_stopping_metric"] = "auto"  # resolves to HR@10 later
-    else:
-        optim["early_stopping_metric"] = "auto"
+    optim["early_stopping_metric"] = "auto"
 with open(out, "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
 PY
@@ -56,30 +57,30 @@ for CONFIG in "${CONFIGS[@]}"; do
   mkdir -p "$root_dir"
 
   cfg_mse="${tmp_dir}/${model_id}_mse.yaml"
-  cfg_bpr="${tmp_dir}/${model_id}_bpr.yaml"
+  cfg_rank="${tmp_dir}/${model_id}_rank.yaml"
   make_cfg "$CONFIG" "$cfg_mse" "mse"
-  make_cfg "$CONFIG" "$cfg_bpr" "bpr"
+  make_cfg "$CONFIG" "$cfg_rank" "rank"
 
   echo "[train] ($model_id) MSE run -> $root_dir/mse"
   python3 -m src.train --config "$cfg_mse" --run_dir "$root_dir/mse"
 
-  echo "[train] ($model_id) BPR run -> $root_dir/bpr"
-  python3 -m src.train --config "$cfg_bpr" --run_dir "$root_dir/bpr"
+  echo "[train] ($model_id) ApproxNDCG run -> $root_dir/rank"
+  python3 -m src.train --config "$cfg_rank" --run_dir "$root_dir/rank"
 
-  pretrain_dir="${tmp_dir}/${model_id}_mse_to_bpr_pretrain"
-  finetune_dir="$root_dir/mse_to_bpr"
+  pretrain_dir="${tmp_dir}/${model_id}_mse_to_rank_pretrain"
+  finetune_dir="$root_dir/mse_to_rank"
 
   echo "[train] ($model_id) Fine-tune stage 1 (MSE) -> $pretrain_dir"
   python3 -m src.train --config "$cfg_mse" --run_dir "$pretrain_dir"
 
   resume_ckpt="$pretrain_dir/best.ckpt"
   if [[ ! -f "$resume_ckpt" ]]; then
-    echo "[error] Expected checkpoint $resume_ckpt not found; skipping fine-tune BPR" >&2
+    echo "[error] Expected checkpoint $resume_ckpt not found; skipping fine-tune ApproxNDCG" >&2
     continue
   fi
 
-  echo "[train] ($model_id) Fine-tune stage 2 (BPR from $resume_ckpt) -> $finetune_dir"
-  python3 -m src.train --config "$cfg_bpr" --run_dir "$finetune_dir" --resume "$resume_ckpt"
+  echo "[train] ($model_id) Fine-tune stage 2 (ApproxNDCG from $resume_ckpt) -> $finetune_dir"
+  python3 -m src.train --config "$cfg_rank" --run_dir "$finetune_dir" --resume "$resume_ckpt"
 
   echo "[done] ($model_id) Outputs under $root_dir"
 done

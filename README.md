@@ -5,7 +5,7 @@ Item-based Collaborative Filtering | Matrix Factorization | Neural Matrix Factor
 
 - Models: Matrix Factorization (MF), NeuMF, Two-Tower, and ItemCF baseline.
 
-- Objectives: MSE (explicit ratings), BPR (implicit ranking), and MSE→BPR fine-tune.
+- Objectives: MSE (explicit ratings), ApproxNDCG (implicit ranking), and MSE→ApproxNDCG fine-tune.
 
 - Reproducible runs: auto-timestamped run dirs, TensorBoard logs, best/last checkpoints.
 
@@ -51,8 +51,8 @@ python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs
 # 6) Serve Recommendations
 python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 123 --k 10
 
-# Optional: BPR Loss
-# Set optim.loss: bpr in any config (or use configs/config_*_bpr.yaml) to optimise Bayesian Personalized Ranking.
+# Optional: ApproxNDCG Loss
+# Set optim.loss: approx_ndcg in any config (or use configs/config_*_rank.yaml) to optimise the differentiable NDCG surrogate.
 
 # Batch Variants Helper
 # Run all variants for MF, NeuMF, and Two-Tower (writes to runs/variants/...)

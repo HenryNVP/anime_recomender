@@ -26,7 +26,9 @@ optim:
   epochs: 50
   early_stopping_patience: 5
   early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
-  loss: mse                     # mse | bpr
+  loss: mse                     # mse | approx_ndcg
+  approx_ndcg_negatives: 50
+  approx_ndcg_temperature: 1.0
   amp: true
 
 log:

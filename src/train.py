@@ -30,6 +30,7 @@ from src.recsys.models.neumf import NeuMF
 from src.recsys.models.twotower import TwoTower
 from src.utils import seed_all, Logger, get_device
 from src.recsys import metrics
+from src.recsys.losses import approx_ndcg_loss
 
 
 # -----------------------------
@@ -137,8 +138,52 @@ def load_ckpt_for_resume(path: str, model: torch.nn.Module, opt: Optional[torch.
     n_items_ck = int(ck.get("n_items", 0))
     return start_epoch, best_val, n_users_ck, n_items_ck, ck.get("cfg", None)
 
+
+def prepare_validation_context(
+    processed_dir: str,
+    *,
+    pos_threshold: float = 8.0,
+    max_users: int = 300,
+) -> dict:
+    train_path = os.path.join(processed_dir, "splits/train.csv")
+    val_path = os.path.join(processed_dir, "splits/val.csv")
+    if not os.path.exists(train_path) or not os.path.exists(val_path):
+        raise FileNotFoundError("Missing train/val splits for validation.")
+
+    df_tr = pd.read_csv(train_path, usecols=["user_id", "anime_id"])
+    df_va = pd.read_csv(val_path, usecols=["user_id", "anime_id", "rating"])
+
+    seen: dict[int, set[int]] = {}
+    for u, i in df_tr.itertuples(index=False):
+        seen.setdefault(int(u), set()).add(int(i))
+
+    pos_va = df_va[df_va["rating"] >= pos_threshold]
+    truths_all = {
+        int(u): grp["anime_id"].astype(int).tolist()
+        for u, grp in pos_va.groupby("user_id")
+    }
+    users = sorted(truths_all.keys())
+    if max_users and max_users > 0:
+        users = users[:max_users]
+    truths = {u: truths_all[u] for u in users}
+
+    return {
+        "users": users,
+        "truths": truths,
+        "seen": seen,
+    }
+
+
 @torch.no_grad()
-def validate_epoch(model, device, cfg, dl_val: DataLoader, *, n_items: int, epoch: int):
+def validate_epoch(
+    model,
+    device,
+    dl_val: DataLoader,
+    *,
+    n_items: int,
+    epoch: int,
+    val_ctx: dict,
+):
     model.eval()
 
     # ------- RMSE on val loader -------
@@ -151,29 +196,19 @@ def validate_epoch(model, device, cfg, dl_val: DataLoader, *, n_items: int, epoc
     val_rmse = float(np.sqrt(se / max(n, 1)))
 
     # ------- Ranking on a subset of users -------
-    proc = cfg["recsys"]["processed_dir"]
-    df_tr = pd.read_csv(os.path.join(proc, "splits/train.csv"))
-    df_va = pd.read_csv(os.path.join(proc, "splits/val.csv"))
-
-    # choose up to 300 users that have at least one positive in val (>= 8)
-    pos_va = df_va[df_va["rating"] >= 8.0]
-    users = sorted(pos_va["user_id"].unique().tolist())[:300]
-
-    # build seen masks from train (exclude-seen)
-    seen = {}
-    for u, i in df_tr[["user_id","anime_id"]].itertuples(index=False):
-        seen.setdefault(int(u), set()).add(int(i))
+    users = val_ctx["users"]
+    truths = val_ctx["truths"]
+    seen = val_ctx["seen"]
 
     hr_list, ndcg_list = [], []
     B = 8192  # score items in chunks to reduce memory
+    items = torch.arange(n_items, device=device)
     for u in users:
-        # positives in val
-        truth = pos_va[pos_va["user_id"] == u]["anime_id"].astype(int).tolist()
+        truth = truths.get(u)
         if not truth:
             continue
 
         scores = []
-        items = torch.arange(n_items, device=device)
         uu = torch.full_like(items, u, dtype=torch.long)
         for t in range(0, n_items, B):
             it = items[t:t+B]; ut = uu[t:t+B]
@@ -225,11 +260,14 @@ def main():
     seed_all(cfg.get("seed", 42))
 
     optim_cfg = cfg.get("optim", {})
-    loss_type = str(optim_cfg.get("loss", "mse")).lower()
-    if loss_type not in {"mse", "bpr"}:
-        raise ValueError(f"Unsupported loss type: {loss_type}")
+    loss_cfg = str(optim_cfg.get("loss", "mse")).lower()
+    if loss_cfg == "rank":
+        loss_cfg = "approx_ndcg"
+    if loss_cfg not in {"mse", "approx_ndcg"}:
+        raise ValueError(f"Unsupported loss type: {loss_cfg}")
+    loss_type = loss_cfg
 
-    metric_default = "ndcg@10" if loss_type == "bpr" else "rmse"
+    metric_default = "ndcg@10" if loss_type == "approx_ndcg" else "rmse"
     metric_cfg = optim_cfg.get("early_stopping_metric", "auto")
     metric_alias = str(metric_cfg).lower()
     if metric_alias == "auto":
@@ -271,10 +309,12 @@ def main():
         raise RuntimeError("Empty dataset: n_users or n_items is zero.")
 
     user_pos: list[set[int]] = []
-    if loss_type == "bpr":
+    if loss_type == "approx_ndcg":
         user_pos = [set() for _ in range(n_users)]
         for u_id, i_id in zip(train_ds.u.tolist(), train_ds.i.tolist()):
             user_pos[int(u_id)].add(int(i_id))
+
+    val_ctx = prepare_validation_context(proc)
 
     # Model
     model = build_model(cfg, n_users, n_items)
@@ -307,6 +347,8 @@ def main():
         weight_decay=float(cfg["optim"].get("weight_decay", 0.0)),
     )
     loss_fn = nn.MSELoss() if loss_type == "mse" else None
+    approx_ndcg_negatives = max(1, int(optim_cfg.get("approx_ndcg_negatives", 50)))
+    approx_ndcg_temperature = float(optim_cfg.get("approx_ndcg_temperature", 1.0))
 
     # Dataloaders
     dl_train = DataLoader(
@@ -329,9 +371,6 @@ def main():
     # Resume if requested
     start_epoch = 1
     best_metric_val = math.inf if not maximize_metric else -math.inf
-    best_rmse = math.inf
-    best_hr10 = 0.0
-    best_ndcg10 = 0.0
     if args.resume and os.path.exists(args.resume):
         try:
             se, bv, n_users_ck, n_items_ck, _cfg_ck = load_ckpt_for_resume(args.resume, model, opt)
@@ -340,14 +379,30 @@ def main():
                 f"vs data {n_users}/{n_items}"
             )
             start_epoch = se
-            best_metric_val = bv
-            if early_stop_metric == "rmse":
-                best_rmse = min(best_rmse, bv)
-            elif early_stop_metric == "hr@10":
-                best_hr10 = max(best_hr10, bv)
+            ckpt_optim = (_cfg_ck or {}).get("optim", {}) if isinstance(_cfg_ck, dict) else {}
+            ckpt_loss = str(ckpt_optim.get("loss", "mse")).lower()
+            if ckpt_loss == "rank":
+                ckpt_loss = "approx_ndcg"
+            ckpt_metric_alias = str(ckpt_optim.get("early_stopping_metric", "auto")).lower()
+            if ckpt_metric_alias == "auto":
+                ckpt_metric_alias = "ndcg@10" if ckpt_loss == "approx_ndcg" else "rmse"
+            elif ckpt_metric_alias in {"hr@10", "hr10", "hr"}:
+                ckpt_metric_alias = "hr@10"
+            elif ckpt_metric_alias in {"ndcg@10", "ndcg10", "ndcg"}:
+                ckpt_metric_alias = "ndcg@10"
             else:
-                best_ndcg10 = max(best_ndcg10, bv)
-            print(f"[resume] {args.resume} -> epoch {start_epoch} ({metric_display} best={best_metric_val:.6f})")
+                ckpt_metric_alias = "rmse"
+
+            metric_matches = (ckpt_metric_alias == early_stop_metric)
+            if metric_matches:
+                best_metric_val = bv
+                print(f"[resume] {args.resume} -> epoch {start_epoch} ({metric_display} best={best_metric_val:.6f})")
+            else:
+                best_metric_val = math.inf if not maximize_metric else -math.inf
+                print(
+                    f"[resume] {args.resume} -> epoch {start_epoch} "
+                    f"(resetting early-stop metric: ckpt tracked {ckpt_metric_alias.upper()}={bv:.4f})"
+                )
         except Exception as e:
             print(f"[warn] Failed to resume from {args.resume}: {e}")
 
@@ -355,23 +410,30 @@ def main():
     epochs_no_improve = 0
     patience = int(optim_cfg.get("early_stopping_patience", 3))
 
-    def sample_negatives(users: torch.Tensor) -> torch.Tensor:
-        if loss_type != "bpr":
-            raise RuntimeError("sample_negatives called while not using BPR")
+    def sample_negatives(users: torch.Tensor, n_samples: int = 1) -> torch.Tensor:
+        if loss_type != "approx_ndcg":
+            raise RuntimeError("sample_negatives called while not using ApproxNDCG")
         users_cpu = users.detach().cpu().tolist()
-        neg = torch.randint(0, n_items, (len(users_cpu),), device=device)
+        shape = (len(users_cpu), n_samples)
+        neg = torch.randint(0, n_items, shape, device=device)
         for idx, u in enumerate(users_cpu):
-            attempts = 0
             if not user_pos[u]:
                 continue
-            while int(neg[idx].item()) in user_pos[u]:
-                neg[idx] = torch.randint(0, n_items, (), device=device)
-                attempts += 1
-                if attempts > 10:
-                    break
+            for col in range(n_samples):
+                attempts = 0
+                while int(neg[idx, col].item()) in user_pos[u]:
+                    neg[idx, col] = torch.randint(0, n_items, (), device=device)
+                    attempts += 1
+                    if attempts > 10:
+                        break
+        if n_samples == 1:
+            return neg.view(-1)
         return neg
 
-    train_metric_label = "loss (BPR)" if loss_type == "bpr" else "loss (RMSE)"
+    if loss_type == "approx_ndcg":
+        train_metric_label = "loss (ApproxNDCG)"
+    else:
+        train_metric_label = "loss (RMSE)"
 
     for epoch in range(1, cfg["optim"]["epochs"] + 1):
         model.train()
@@ -382,11 +444,21 @@ def main():
             if loss_type == "mse":
                 pred = model(u, i)
                 loss = loss_fn(pred, r)
-            else:  # BPR
-                neg_items = sample_negatives(u)
-                pos_scores = model(u, i)
-                neg_scores = model(u, neg_items)
-                loss = -torch.nn.functional.logsigmoid(pos_scores - neg_scores).mean()
+            else:  # approx_ndcg
+                neg_items = sample_negatives(u, approx_ndcg_negatives)
+                candidates = torch.cat([i.unsqueeze(1), neg_items], dim=1)
+                labels = torch.zeros_like(candidates, dtype=torch.float32)
+                labels[:, 0] = r
+                perm = torch.rand(u.size(0), candidates.size(1), device=device).argsort(dim=1)
+                candidates = torch.gather(candidates, 1, perm)
+                labels = torch.gather(labels, 1, perm)
+                users_expanded = u.unsqueeze(1).expand_as(candidates)
+                scores = model(users_expanded.reshape(-1), candidates.reshape(-1)).view_as(candidates)
+                loss = approx_ndcg_loss(
+                    scores,
+                    labels,
+                    temperature=approx_ndcg_temperature,
+                )
             loss.backward()
             opt.step()
             train_loss += loss.item(); steps += 1
@@ -395,7 +467,14 @@ def main():
         logger.log_scalar(epoch, "train", "loss", train_loss)
 
         # --- validate ---
-        val_metrics = validate_epoch(model, device, cfg, dl_val, n_items=n_items, epoch=epoch)
+        val_metrics = validate_epoch(
+            model,
+            device,
+            dl_val,
+            n_items=n_items,
+            epoch=epoch,
+            val_ctx=val_ctx,
+        )
         logger.log_dict(epoch, "val", {
             "rmse": val_metrics["rmse"],
             "hr@10": val_metrics["hr@10"],
@@ -433,10 +512,6 @@ def main():
         else:
             epochs_no_improve += 1
 
-        best_rmse = min(best_rmse, cur_rmse)
-        best_hr10 = max(best_hr10, cur_hr10)
-        best_ndcg10 = max(best_ndcg10, cur_ndcg10)
-
         # always save last
         save_ckpt(
             path=os.path.join(run_dir, "last.ckpt"),
@@ -454,9 +529,7 @@ def main():
             f"epoch {epoch:02d} | train {train_metric_label} {train_loss:.4f} | "
             f"val RMSE {cur_rmse:.4f} | HR@10 {cur_hr10:.4f} | "
             f"NDCG@10 {cur_ndcg10:.4f} | "
-            f"best RMSE {best_rmse:.4f} | best HR@10 {best_hr10:.4f} | "
-            f"best NDCG@10 {best_ndcg10:.4f} | "
-            f"early-stop {metric_display} {best_metric_val:.4f}"
+            f"early-stop {metric_display} best {best_metric_val:.4f}"
         )
 
         # --- early stopping ---

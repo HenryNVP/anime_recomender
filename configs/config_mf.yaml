@@ -12,7 +12,7 @@ recsys:
 
 model:
   name: mf
-  mf_dim: 64
+  mf_dim: 32
   user_bias: true
   item_bias: true
 
@@ -20,10 +20,12 @@ optim:
   batch_size: 65536
   lr: 1.0e-3
   weight_decay: 1.0e-5
-  epochs: 50
+  epochs: 10
   early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
-  loss: mse                     # mse | bpr
+  loss: mse                     # mse | approx_ndcg
+  approx_ndcg_negatives: 50
+  approx_ndcg_temperature: 1.0
   amp: true
 
 log:
