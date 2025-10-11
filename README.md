@@ -52,16 +52,15 @@ python -m src.eval --ckpt runs/two_tower/[latest_run]/best.ckpt --config configs
 ## CLI (one-off; original user id)
 python -m src.serve --config configs/config_twotower.yaml --ckpt runs/two_tower/[latest_run]/best.ckpt --user 654321 --k 10
 
-## FastAPI service (multi-model)
+## FastAPI service
 python -m src.serve --http \
   --model twotower=configs/config_twotower.yaml:runs/two_tower/[latest_run]/best.ckpt \
-  --model mf=configs/config_mf.yaml:runs/mf/[latest_run]/best.ckpt \
   --port 8080
 
 # Request example (JSON)
 curl -X POST http://localhost:8080/v1/recommendations \
   -H "Content-Type: application/json" \
-  -d '{"user_id":654321, "model":"twotower", "k":10, "include_history":true}'
+  -d '{"user_id":1, "k":10, "include_history":true}'
 
 # List loaded models
 curl http://localhost:8080/v1/models

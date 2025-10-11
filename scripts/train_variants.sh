@@ -1,51 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Runs the default variants:
+#   - Two-Tower (MSE) + BPR fine-tune
+#   - NeuMF (MSE)
+#   - MF (MSE)
+#
+# Usage:
+#   scripts/train_variants.sh [runs_root] [opt_config_paths...]
+# If config paths are provided they override the defaults. The first non-YAML
+# argument is treated as the runs root.
+
 RUNS_ROOT="runs/variants"
 if (($# > 0)) && [[ $1 != *.yaml ]]; then
   RUNS_ROOT=$1
   shift
 fi
-
-ITEMCF_ENABLED=${ITEMCF_ENABLED:-1}
-ITEMCF_DATA_DIR=${ITEMCF_DATA_DIR:-data/processed}
-ITEMCF_SPLITS_DIR=${ITEMCF_SPLITS_DIR:-data/processed/splits}
-ITEMCF_OUT_PREFIX=${ITEMCF_OUT_PREFIX:-runs/itemcf/anime}
-ITEMCF_K=${ITEMCF_K:-100}
-ITEMCF_SHRINK=${ITEMCF_SHRINK:-50}
-ITEMCF_CLIP_MIN=${ITEMCF_CLIP_MIN:-1.0}
-ITEMCF_CLIP_MAX=${ITEMCF_CLIP_MAX:-10.0}
-ITEMCF_EVAL_ON=${ITEMCF_EVAL_ON:-val}
-ITEMCF_TRAIN_ARGS_STR=${ITEMCF_TRAIN_ARGS_STR:-}
-ITEMCF_TRAIN_ARGS=()
-if [[ -n "$ITEMCF_TRAIN_ARGS_STR" ]]; then
-  # shellcheck disable=SC2206
-  ITEMCF_TRAIN_ARGS=($ITEMCF_TRAIN_ARGS_STR)
-fi
-
-itemcf_ran=0
-run_itemcf() {
-  if (( itemcf_ran )); then
-    return
-  fi
-  itemcf_ran=1
-  echo "[train] (itemcf) -> $ITEMCF_OUT_PREFIX"
-  itemcf_cmd=(
-    python3 -m src.baselines.itemcf.train
-    --data_dir "$ITEMCF_DATA_DIR"
-    --out_prefix "$ITEMCF_OUT_PREFIX"
-    --k "$ITEMCF_K"
-    --shrink "$ITEMCF_SHRINK"
-    --clip_min "$ITEMCF_CLIP_MIN"
-    --clip_max "$ITEMCF_CLIP_MAX"
-    --eval_on "$ITEMCF_EVAL_ON"
-  )
-  if [[ -n "$ITEMCF_SPLITS_DIR" ]]; then
-    itemcf_cmd+=(--splits_dir "$ITEMCF_SPLITS_DIR")
-  fi
-  itemcf_cmd+=("${ITEMCF_TRAIN_ARGS[@]}")
-  "${itemcf_cmd[@]}"
-}
 
 if (($# == 0)); then
   CONFIGS=(
@@ -74,10 +44,9 @@ with open(base, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 optim = cfg.setdefault("optim", {})
 loss = loss.lower()
-if loss not in {"mse", "approx_ndcg", "rank"}:
+if loss not in {"mse", "bpr"}:
     raise ValueError(f"unsupported loss alias: {loss}")
-loss_value = "approx_ndcg" if loss == "rank" else loss
-optim["loss"] = loss_value
+optim["loss"] = loss
 if optim.get("early_stopping_metric", "auto") == "auto":
     optim["early_stopping_metric"] = "auto"
 with open(out, "w", encoding="utf-8") as f:
@@ -99,19 +68,10 @@ for CONFIG in "${CONFIGS[@]}"; do
   cfg_mse="${tmp_dir}/${model_id}_mse.yaml"
   make_cfg "$CONFIG" "$cfg_mse" "mse"
 
-  should_finetune=0
-  cfg_rank=""
-  if [[ "$model_id" == *twotower* ]]; then
-    should_finetune=1
-    cfg_rank="${tmp_dir}/${model_id}_rank.yaml"
-    make_cfg "$CONFIG" "$cfg_rank" "rank"
-  fi
-
   echo "[train] ($model_id) MSE run -> $root_dir/mse"
   python3 -m src.train --config "$cfg_mse" --run_dir "$root_dir/mse"
 
-  if (( should_finetune )); then
-    finetune_dir="$root_dir/mse_to_rank"
+  if [[ "$model_id" == *twotower* ]]; then
     resume_ckpt=""
     if [[ -f "$root_dir/mse/best.ckpt" ]]; then
       resume_ckpt="$root_dir/mse/best.ckpt"
@@ -119,27 +79,23 @@ for CONFIG in "${CONFIGS[@]}"; do
       resume_ckpt="$root_dir/mse/last.ckpt"
     fi
 
-    if [[ -n "$resume_ckpt" ]]; then
-      echo "[train] ($model_id) ApproxNDCG fine-tune from $resume_ckpt -> $finetune_dir"
-      python3 -m src.train --config "$cfg_rank" --run_dir "$finetune_dir" --resume "$resume_ckpt"
-    else
-      echo "[warn] ($model_id) no checkpoint found in $root_dir/mse; skipping ApproxNDCG fine-tune" >&2
+    bpr_base="$CONFIG"
+    candidate_bpr_cfg="${CONFIG%.yaml}_bpr.yaml"
+    if [[ -f "$candidate_bpr_cfg" ]]; then
+      bpr_base="$candidate_bpr_cfg"
     fi
 
-    if (( ITEMCF_ENABLED )); then
-      run_itemcf
+    cfg_bpr="${tmp_dir}/${model_id}_bpr.yaml"
+    make_cfg "$bpr_base" "$cfg_bpr" "bpr"
+    finetune_dir="$root_dir/mse_to_bpr"
+
+    if [[ -n "$resume_ckpt" ]]; then
+      echo "[train] ($model_id) BPR fine-tune from $resume_ckpt -> $finetune_dir"
+      python3 -m src.train --config "$cfg_bpr" --run_dir "$finetune_dir" --resume "$resume_ckpt"
+    else
+      echo "[warn] ($model_id) no checkpoint found in $root_dir/mse; skipping BPR fine-tune" >&2
     fi
-  else
-    echo "[info] ($model_id) skipping ApproxNDCG fine-tune (Two-Tower only)"
   fi
 
   echo "[done] ($model_id) Outputs under $root_dir"
 done
-
-if (( ITEMCF_ENABLED )); then
-  if (( ! itemcf_ran )); then
-    run_itemcf
-  fi
-else
-  echo "[skip] itemcf training disabled"
-fi

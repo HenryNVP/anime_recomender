@@ -82,15 +82,33 @@ def load_model_from_ckpt(ckpt_path: str, device: str) -> Tuple[torch.nn.Module, 
             item_bias=bool(cfg_ck["model"].get("item_bias", True)),
         )
     elif name in {"two_tower", "twotower"}:
+        model_cfg = cfg_ck.get("model", {})
+        item_features = None
+        feat_path = model_cfg.get("item_feature_path") or model_cfg.get("item_features_path")
+        if feat_path:
+            feat_path = os.path.expanduser(feat_path)
+            if not os.path.exists(feat_path):
+                raise FileNotFoundError(f"Configured item_feature_path not found: {feat_path}")
+            feats_np = np.load(feat_path)
+            if not isinstance(feats_np, np.ndarray) or feats_np.ndim != 2:
+                raise ValueError(
+                    f"item_feature_path must load a 2D array, got shape {getattr(feats_np, 'shape', None)}"
+                )
+            item_features = torch.from_numpy(feats_np.astype(np.float32, copy=False))
+
         model = TwoTower(
             n_users=n_users,
             n_items=n_items,
-            embed_dim=int(cfg_ck["model"].get("embed_dim", cfg_ck["model"].get("mf_dim", 64))),
-            user_layers=tuple(cfg_ck["model"].get("user_layers", [])),
-            item_layers=tuple(cfg_ck["model"].get("item_layers", [])),
-            dropout=float(cfg_ck["model"].get("dropout", 0.0)),
-            user_bias=bool(cfg_ck["model"].get("user_bias", True)),
-            item_bias=bool(cfg_ck["model"].get("item_bias", True)),
+            embed_dim=int(model_cfg.get("embed_dim", model_cfg.get("mf_dim", 64))),
+            user_layers=tuple(model_cfg.get("user_layers", [])),
+            item_layers=tuple(model_cfg.get("item_layers", [])),
+            dropout=float(model_cfg.get("dropout", 0.0)),
+            user_bias=bool(model_cfg.get("user_bias", True)),
+            item_bias=bool(model_cfg.get("item_bias", True)),
+            item_features=item_features,
+            item_feature_layers=tuple(model_cfg.get("item_feature_layers", [])),
+            item_feature_dropout=float(model_cfg.get("item_feature_dropout", model_cfg.get("dropout", 0.0))),
+            item_feature_combine=str(model_cfg.get("item_feature_combine", "concat")),
         )
     else:
         raise ValueError(f"Unsupported model for eval: {name}")

@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Evaluate the default recommender variants:
+#   - Two-Tower (MSE checkpoint + BPR fine-tune)
+#   - NeuMF (MSE)
+#   - MF (MSE)
+#
+# Usage:
+#   scripts/evaluate_all.sh [out_root] [variants_root] [opt_config_paths...]
+# Non-YAML arguments override the output directory and the variants directory.
+
 OUT_ROOT="runs/evaluation"
 VARIANTS_ROOT="runs/variants"
 ITEMCF_ENABLED=${ITEMCF_ENABLED:-1}
 ITEMCF_MODEL_PREFIX=${ITEMCF_MODEL_PREFIX:-runs/itemcf/anime}
 ITEMCF_SPLITS_DIR=${ITEMCF_SPLITS_DIR:-data/processed/splits}
-ITEMCF_VARIANT=${ITEMCF_VARIANT:-baseline}
 ITEMCF_SPLIT=${ITEMCF_SPLIT:-test}
 ITEMCF_K_LIST=${ITEMCF_K_LIST:-10,20}
+ITEMCF_VARIANT=${ITEMCF_VARIANT:-baseline}
 ITEMCF_EVAL_ARGS_STR=${ITEMCF_EVAL_ARGS_STR:-}
 ITEMCF_EVAL_ARGS=()
 if [[ -n "$ITEMCF_EVAL_ARGS_STR" ]]; then
@@ -20,7 +29,6 @@ if (($# > 0)) && [[ $1 != *.yaml ]]; then
   OUT_ROOT=$1
   shift
 fi
-
 if (($# > 0)) && [[ $1 != *.yaml ]]; then
   VARIANTS_ROOT=$1
   shift
@@ -28,9 +36,9 @@ fi
 
 if (($# == 0)); then
   CONFIGS=(
-    configs/config_mf.yaml
-    configs/config_neumf.yaml
     configs/config_twotower.yaml
+    configs/config_neumf.yaml
+    configs/config_mf.yaml
   )
 else
   CONFIGS=("$@")
@@ -40,7 +48,27 @@ timestamp=$(date +%Y%m%d_%H%M%S)
 dest_dir="${OUT_ROOT}/${timestamp}"
 mkdir -p "$dest_dir"
 
-declare -a METRIC_FILES=()
+tmp_dir=$(mktemp -d)
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT
+
+make_cfg() {
+  local base_cfg=$1
+  local out_cfg=$2
+  local loss_name=$3
+  python3 - "$base_cfg" "$out_cfg" "$loss_name" <<'PY'
+import sys, yaml
+base, out, loss = sys.argv[1:4]
+with open(base, "r", encoding="utf-8") as f:
+    cfg = yaml.safe_load(f)
+optim = cfg.setdefault("optim", {})
+optim["loss"] = loss.lower()
+if optim.get("early_stopping_metric", "auto") == "auto":
+    optim["early_stopping_metric"] = "auto"
+with open(out, "w", encoding="utf-8") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False)
+PY
+}
 
 find_latest_variant_dir() {
   local base_dir=$1
@@ -51,24 +79,12 @@ find_latest_variant_dir() {
   echo "$base_dir/$latest"
 }
 
-get_exp_name() {
-  python3 - "$1" <<'PY'
-import sys, yaml
-path = sys.argv[1]
-with open(path, 'r', encoding='utf-8') as f:
-    cfg = yaml.safe_load(f)
-print(cfg.get('exp_name', 'exp'))
-PY
-}
-
-find_ckpt() {
-  local config_path=$1
-  local model_id=$2
-  local variant=$3
-
-  local variant_base="$VARIANTS_ROOT/$model_id"
-  if latest_dir=$(find_latest_variant_dir "$variant_base" 2>/dev/null); then
-    local run_dir="$latest_dir/$variant"
+find_variant_ckpt() {
+  local model_id=$1
+  local variant=$2
+  local base_dir="${VARIANTS_ROOT}/${model_id}"
+  if latest_dir=$(find_latest_variant_dir "$base_dir" 2>/dev/null); then
+    local run_dir="${latest_dir}/${variant}"
     if [[ -d "$run_dir" ]]; then
       if [[ -f "$run_dir/best.ckpt" ]]; then
         echo "$run_dir/best.ckpt"
@@ -79,20 +95,10 @@ find_ckpt() {
       fi
     fi
   fi
-
-  local exp_name
-  exp_name=$(get_exp_name "$config_path")
-  local default_dir="runs/${exp_name}/latest"
-  if [[ -f "$default_dir/best.ckpt" ]]; then
-    echo "$default_dir/best.ckpt"
-    return 0
-  elif [[ -f "$default_dir/last.ckpt" ]]; then
-    echo "$default_dir/last.ckpt"
-    return 0
-  fi
-
   return 1
 }
+
+declare -a METRIC_FILES=()
 
 for cfg in "${CONFIGS[@]}"; do
   if [[ ! -f "$cfg" ]]; then
@@ -104,22 +110,39 @@ for cfg in "${CONFIGS[@]}"; do
   model_id=${cfg_name%.yaml}
 
   variants=("mse")
+  variant_losses=("mse")
+  variant_cfg_bases=("$cfg")
+
   if [[ "$model_id" == *twotower* ]]; then
-    variants+=("mse_to_rank")
+    variants+=("mse_to_bpr")
+    variant_losses+=("bpr")
+    bpr_base="$cfg"
+    candidate_bpr_cfg="${cfg%.yaml}_bpr.yaml"
+    if [[ -f "$candidate_bpr_cfg" ]]; then
+      bpr_base="$candidate_bpr_cfg"
+    fi
+    variant_cfg_bases+=("$bpr_base")
   fi
 
-  for variant in "${variants[@]}"; do
-    ckpt_path=$(find_ckpt "$cfg" "$model_id" "$variant" || true)
+  for idx in "${!variants[@]}"; do
+    variant="${variants[$idx]}"
+    loss="${variant_losses[$idx]}"
+    base_cfg="${variant_cfg_bases[$idx]}"
+
+    ckpt_path=$(find_variant_ckpt "$model_id" "$variant" || true)
     if [[ -z "$ckpt_path" ]]; then
       echo "[warn] no checkpoint found for $model_id ($variant)" >&2
       continue
     fi
 
+    eval_cfg="${tmp_dir}/${model_id}_${variant}.yaml"
+    make_cfg "$base_cfg" "$eval_cfg" "$loss"
+
     metrics_file="${dest_dir}/${model_id}__${variant}.json"
     log_file="${dest_dir}/${model_id}__${variant}.log"
 
     echo "[eval] $model_id ($variant) -> $metrics_file"
-    if python3 -m src.eval --config "$cfg" --ckpt "$ckpt_path" --out "$metrics_file" 2>&1 | tee "$log_file"; then
+    if python3 -m src.eval --config "$eval_cfg" --ckpt "$ckpt_path" --out "$metrics_file" 2>&1 | tee "$log_file"; then
       METRIC_FILES+=("$metrics_file")
     else
       echo "[error] evaluation failed for $cfg ($variant) (see $log_file)" >&2

@@ -1,5 +1,5 @@
 seed: 42
-exp_name: two_tower
+exp_name: two_tower_bpr_ft
 
 recsys:
   dataset_csv: data/raw/ratings.csv
@@ -25,14 +25,13 @@ model:
 
 optim:
   batch_size: 4096
-  lr: 1.0e-3
+  lr: 1.0e-4
   weight_decay: 1.0e-5
-  epochs: 50
+  epochs: 20
   early_stopping_patience: 5
-  early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
-  loss: mse                     # mse | approx_ndcg
-  approx_ndcg_negatives: 50
-  approx_ndcg_temperature: 1.0
+  early_stopping_metric: ndcg@10  # ranking metric for BPR fine-tune
+  loss: bpr                      # mse | approx_ndcg | bpr
+  bpr_negatives: 5
   amp: true
 
 log:

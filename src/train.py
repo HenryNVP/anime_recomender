@@ -30,7 +30,7 @@ from src.recsys.models.neumf import NeuMF
 from src.recsys.models.twotower import TwoTower
 from src.utils import seed_all, Logger, get_device
 from src.recsys import metrics
-from src.recsys.losses import approx_ndcg_loss
+from src.recsys.losses import approx_ndcg_loss, bpr_loss
 
 
 # -----------------------------
@@ -89,6 +89,18 @@ def build_model(cfg: dict, n_users: int, n_items: int) -> torch.nn.Module:
             item_bias=bool(m.get("item_bias", True)),
         )
     elif name in {"two_tower", "twotower"}:
+        item_features = None
+        feat_path = m.get("item_feature_path") or m.get("item_features_path")
+        if feat_path:
+            if not os.path.exists(feat_path):
+                raise FileNotFoundError(f"Configured item_feature_path not found: {feat_path}")
+            feats_np = np.load(feat_path)
+            if not isinstance(feats_np, np.ndarray) or feats_np.ndim != 2:
+                raise ValueError(
+                    f"item_feature_path must load a 2D array, got shape {getattr(feats_np, 'shape', None)}"
+                )
+            item_features = torch.from_numpy(feats_np.astype(np.float32, copy=False))
+
         return TwoTower(
             n_users=n_users,
             n_items=n_items,
@@ -98,6 +110,10 @@ def build_model(cfg: dict, n_users: int, n_items: int) -> torch.nn.Module:
             dropout=float(m.get("dropout", 0.0)),
             user_bias=bool(m.get("user_bias", True)),
             item_bias=bool(m.get("item_bias", True)),
+            item_features=item_features,
+            item_feature_layers=tuple(m.get("item_feature_layers", [])),
+            item_feature_dropout=float(m.get("item_feature_dropout", m.get("dropout", 0.0))),
+            item_feature_combine=str(m.get("item_feature_combine", "concat")),
         )
     else:
         raise ValueError(f"Unknown model name: {name}")
@@ -263,11 +279,11 @@ def main():
     loss_cfg = str(optim_cfg.get("loss", "mse")).lower()
     if loss_cfg == "rank":
         loss_cfg = "approx_ndcg"
-    if loss_cfg not in {"mse", "approx_ndcg"}:
+    if loss_cfg not in {"mse", "approx_ndcg", "bpr"}:
         raise ValueError(f"Unsupported loss type: {loss_cfg}")
     loss_type = loss_cfg
 
-    metric_default = "ndcg@10" if loss_type == "approx_ndcg" else "rmse"
+    metric_default = "ndcg@10" if loss_type in {"approx_ndcg", "bpr"} else "rmse"
     metric_cfg = optim_cfg.get("early_stopping_metric", "auto")
     metric_alias = str(metric_cfg).lower()
     if metric_alias == "auto":
@@ -309,7 +325,7 @@ def main():
         raise RuntimeError("Empty dataset: n_users or n_items is zero.")
 
     user_pos: list[set[int]] = []
-    if loss_type == "approx_ndcg":
+    if loss_type in {"approx_ndcg", "bpr"}:
         user_pos = [set() for _ in range(n_users)]
         for u_id, i_id in zip(train_ds.u.tolist(), train_ds.i.tolist()):
             user_pos[int(u_id)].add(int(i_id))
@@ -349,6 +365,7 @@ def main():
     loss_fn = nn.MSELoss() if loss_type == "mse" else None
     approx_ndcg_negatives = max(1, int(optim_cfg.get("approx_ndcg_negatives", 50)))
     approx_ndcg_temperature = float(optim_cfg.get("approx_ndcg_temperature", 1.0))
+    bpr_negatives = max(1, int(optim_cfg.get("bpr_negatives", 1)))
 
     # Dataloaders
     dl_train = DataLoader(
@@ -411,8 +428,8 @@ def main():
     patience = int(optim_cfg.get("early_stopping_patience", 3))
 
     def sample_negatives(users: torch.Tensor, n_samples: int = 1) -> torch.Tensor:
-        if loss_type != "approx_ndcg":
-            raise RuntimeError("sample_negatives called while not using ApproxNDCG")
+        if loss_type not in {"approx_ndcg", "bpr"}:
+            raise RuntimeError("sample_negatives called while loss does not require negatives")
         users_cpu = users.detach().cpu().tolist()
         shape = (len(users_cpu), n_samples)
         neg = torch.randint(0, n_items, shape, device=device)
@@ -432,6 +449,8 @@ def main():
 
     if loss_type == "approx_ndcg":
         train_metric_label = "loss (ApproxNDCG)"
+    elif loss_type == "bpr":
+        train_metric_label = "loss (BPR)"
     else:
         train_metric_label = "loss (RMSE)"
 
@@ -444,7 +463,7 @@ def main():
             if loss_type == "mse":
                 pred = model(u, i)
                 loss = loss_fn(pred, r)
-            else:  # approx_ndcg
+            elif loss_type == "approx_ndcg":
                 neg_items = sample_negatives(u, approx_ndcg_negatives)
                 candidates = torch.cat([i.unsqueeze(1), neg_items], dim=1)
                 labels = torch.zeros_like(candidates, dtype=torch.float32)
@@ -459,6 +478,17 @@ def main():
                     labels,
                     temperature=approx_ndcg_temperature,
                 )
+            else:  # bpr
+                neg_items = sample_negatives(u, bpr_negatives)
+                pos_scores = model(u, i)
+                if neg_items.dim() == 1:
+                    neg_scores = model(u, neg_items)
+                    loss = bpr_loss(pos_scores, neg_scores)
+                else:
+                    users_expanded = u.unsqueeze(1).expand_as(neg_items)
+                    neg_scores = model(users_expanded.reshape(-1), neg_items.reshape(-1)).view_as(neg_items)
+                    pos_scores = pos_scores.unsqueeze(1).expand_as(neg_scores)
+                    loss = bpr_loss(pos_scores, neg_scores)
             loss.backward()
             opt.step()
             train_loss += loss.item(); steps += 1
