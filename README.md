@@ -19,7 +19,7 @@ python scripts/preprocess_data.py --data_dir data/demo --out_dir data/processed 
 
 # 2) Baseline Item CF
 # Train baseline
-python -m src.baselines.itemcf.train --data_dir data/processed --out_prefix runs/itemcf/anime --k 100 --shrink 50
+python -m src.baselines.itemcf.train --data_dir data/processed --out_prefix runs/itemcf/anime --k 50 --shrink 25
 
 # Evaluate baseline
 python -m src.baselines.itemcf.eval \

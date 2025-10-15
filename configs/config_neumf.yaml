@@ -14,7 +14,7 @@ model:
   name: neumf
   mf_dim: 64
   mlp_layers: [256, 128, 64]
-  dropout: 0.20
+  dropout: 0.10
   user_bias: true
   item_bias: true
 
@@ -22,7 +22,7 @@ optim:
   batch_size: 65536
   lr: 1.0e-3
   weight_decay: 1.0e-5
-  epochs: 50
+  epochs: 60
   early_stopping_patience: 3
   early_stopping_metric: auto   # auto | rmse | hr@10 | ndcg@10
   loss: mse                     # mse | approx_ndcg

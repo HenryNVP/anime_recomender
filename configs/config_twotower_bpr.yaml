@@ -27,7 +27,7 @@ optim:
   batch_size: 4096
   lr: 1.0e-4
   weight_decay: 1.0e-5
-  epochs: 20
+  epochs: 50
   early_stopping_patience: 5
   early_stopping_metric: ndcg@10  # ranking metric for BPR fine-tune
   loss: bpr                      # mse | approx_ndcg | bpr
